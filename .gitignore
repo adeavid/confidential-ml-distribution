@@ -1,0 +1,28 @@
+# Local credentials and cluster access. Real secrets belong outside this repo.
+.private/
+.kube/
+kubeconfig
+kubeconfig.*
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Downloaded models, generated artifacts, and decrypted working files.
+artifacts/
+runtime/
+.cache/
+*.safetensors
+
+# Python and editor output.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store

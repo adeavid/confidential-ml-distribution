@@ -1,0 +1,16 @@
+# Deny by default. Only source and dependency declarations may enter a build.
+**
+!pyproject.toml
+!requirements*.txt
+!src/
+!src/**
+
+# Keep defensive exclusions even if a credential is misplaced inside src/.
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/.private/**
+**/__pycache__/**
