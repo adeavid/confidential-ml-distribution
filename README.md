@@ -1,33 +1,28 @@
 # Confidential ML Model Distribution PoC
 
-An incremental implementation of a technical assessment. The objective is a
-small, reproducible model distribution pipeline whose decisions can be explained
-and whose failure cases can be demonstrated.
+A reproducible technical assessment implementation with explainable decisions and demonstrated failures.
 
-**Current status:** milestone 1 infrastructure checks passed: one local node is
-Ready and all nine system Pods are Running. The Producer and Consumer are not
-implemented yet. No assessment layer is verified.
-See [verification](#verification) for executed checks and pending work.
+**Current status:** local Kubernetes infrastructure and a real CPU model load
+have passed. Encryption, Hub publication, and Producer/Consumer Jobs are not
+implemented. **Layer 1 is incomplete.** See [verification](#verification).
 
 ## Scope and acceptance
 
 The assessment PDF is the source of requirements. Only Layer 1 is mandatory;
-Layers 2 and 3 are optional and independent. This project will complete and
-validate Layer 1 before adding Layer 2. Layer 3 will only be evaluated afterwards,
-subject to environment compatibility and time for a real test.
+Layers 2 and 3 are optional and independent. Validate Layer 1 before adding Layer 2.
+Evaluate Layer 3 afterwards only if the environment and time allow.
 
-| Requirement | Planned implementation | Acceptance evidence | Status |
+| Requirement | Implementation / plan | Acceptance evidence | Status |
 | --- | --- | --- | --- |
-| L1: select and encrypt a small open HF model | Pin its source commit; package required files; encrypt with AES-256-GCM | Local round trip; reject wrong key, tampering, truncation, and unsafe archive entries | Pending |
-| L1: publish the encrypted artifact on HF Hub | Upload an explicit file list to an authorized test repository | Record the resulting full commit ID; inspect uploaded file names | Pending |
-| L1: deliver the key as a Kubernetes Secret | A documented bootstrap step provisions the Secret; Consumer mounts it read-only | Fresh Pod reads the key file without Kubernetes API credentials | Pending |
-| L1: download, decrypt, and load in Kubernetes | Consumer Job downloads the pinned revision and loads only the decrypted directory | Fresh Job completes a CPU forward pass; missing local files fail without fallback | Pending |
-| L2: sign and verify before decryption | Ed25519 signature over the complete encrypted artifact; controlled public key | Invalid/missing signature or wrong public key aborts before decryption | Pending |
-| Delivery: public Git repo, two Dockerfiles, manifests, README | Add each artifact with its corresponding milestone | Repeat the documented demo from a clean environment | Pending |
+| L1: select and encrypt a small open model | Pinned BERT; planned AES-256-GCM package | Real local load; encryption round trip and malformed-input failures | Local load passed; encryption pending |
+| L1: publish encrypted artifact on HF Hub | Explicit file list; authorized test repository | Resulting full commit ID and uploaded file names | Pending |
+| L1: deliver key through a Kubernetes Secret | Bootstrap provisions Secret; Consumer mounts it read-only | Fresh Pod reads key without Kubernetes API credentials | Pending |
+| L1: download, decrypt, load in Kubernetes | Consumer Job uses pinned revision and decrypted local directory | Fresh Job completes; missing files fail without fallback | Pending |
+| L2: sign and verify before decryption | Ed25519 over complete artifact; trusted public key | Missing/invalid signature or wrong key aborts before decryption | Pending |
+| Delivery: public Git repo, Dockerfiles, manifests, README | Add artifacts with each milestone | Repeat documented demo from a clean environment | In progress |
 
-AES-GCM, Ed25519, a single-node kind cluster, and Jobs are project choices, not
-algorithms or tools prescribed by the assessment. The CPU forward pass is extra
-evidence of a successful load; model loading itself is the formal requirement.
+AES-GCM, Ed25519, kind, and Jobs are project choices. A CPU forward pass is extra
+evidence of an operational model; loading itself is the formal requirement.
 
 ## Planned architecture
 
@@ -44,54 +39,86 @@ Public source model (fixed commit)
                             read-only file         decrypt -> local load
 ```
 
-The diagram describes the target design, not an already executed pipeline.
-The bootstrap handoff of the generated key will be implemented explicitly with
-the Producer; the model process itself does not need permission to create
-Secrets through the Kubernetes API.
+This is the target pipeline. The bootstrap handoff of the generated key will be
+implemented with Producer; the model process need not create Secrets via the API.
 
-- **Pod:** Kubernetes' smallest deployable unit. It groups one or more containers
-  with their network and storage configuration. Our Consumer Pod will have one
-  container running Python and a read-only volume exposing the key as a file.
-- **Job:** creates a Pod for a task that finishes. The Consumer loads and checks
-  a model, then exits; a continuously running service is unnecessary here.
+- **Pod:** Kubernetes' smallest deployable unit, grouping containers with their
+  network and storage. Our Consumer Pod will run Python and mount the key file.
+- **Job:** creates a Pod for a task that finishes. Loading and checking a model
+  does not require a continuously running service.
 - **Secret:** holds the AES key separately from the image and public artifact.
-  Base64 is an encoding, not encryption. Cluster access control and storage
-  protection still matter.
+  Base64 is encoding, not encryption; cluster access and storage protection matter.
 
-Layer 1 separates access to the stored artifact from access to the decryption
-key. Someone who only obtains the encrypted artifact cannot recover its contents
-without the key, assuming the encryption and key handling are sound.
-
-The original model is public. This PoC demonstrates secure distribution of our
-packaged copy; it cannot make the public original secret. Layer 1 trusts the
-Producer, bootstrap operator, Consumer configuration, and host/cluster
+Layer 1 separates artifact access from key access. Someone holding only the
+ciphertext cannot recover its contents, assuming sound encryption and key handling.
+The original model is public: this PoC protects our packaged copy, not that original.
+We trust Producer, the bootstrap operator, Consumer configuration, and host/cluster
 administrators. A privileged administrator may read the key or decrypted model.
-Containers and a local cluster do not remove that trust.
+
+## Local model demo
+
+Prerequisites: Python **3.12.14** available as `python3.12`, and uv **0.8.17**;
+this combination was tested on macOS ARM64. The interpreter must already be
+installed: this uv version cannot automatically download that Python patch.
+Install uv from its [official release](https://github.com/astral-sh/uv/releases/tag/0.8.17).
+`pyproject.toml` pins direct dependencies; `uv.lock` pins the resolved environment.
+Linux selects the PyTorch CPU index; **Linux application execution is not tested yet**.
+
+Source: [Google BERT Tiny](https://huggingface.co/google/bert_uncased_L-2_H-128_A-2/tree/30b0a37ccaaa32f332884b96992754e246e48c5f),
+revision `30b0a37ccaaa32f332884b96992754e246e48c5f`, public and requiring no token.
+`src/model_demo.py` downloads only `config.json`, `model.safetensors` (17.7 MB),
+`vocab.txt`, and the original `README.md`. The model card declares Apache-2.0;
+preserve its attribution and include the license text before redistributing a package.
+
+Run from the repository root:
+
+```bash
+uv sync --frozen --python python3.12
+uv run --frozen python src/model_demo.py download runtime/source-model
+```
+
+The destination must not exist. Download uses the full source revision and verifies
+the weights' pinned SHA-256. It copies regular files from a temporary cache into
+the final folder, then removes that cache. Repeat `load` without downloading again:
+
+```bash
+uv run --frozen python src/model_demo.py load runtime/source-model
+```
+
+The loader requires local configuration, vocabulary, and safetensors files.
+`AutoTokenizer` explicitly lowercases input. `AutoModelForPreTraining` loads the
+complete BERT checkpoint, including both pretraining heads; a base `AutoModel`
+would discard those heads. Missing, unexpected, or mismatched weights fail loading.
+Both loaders use `local_files_only=True` and `trust_remote_code=False`; weights use
+`use_safetensors=True` and `weights_only=True`. No source-model download fallback exists.
+A finite CPU forward pass proves operational loading, not prediction quality.
+
+### Tests
+
+```bash
+uv run --frozen pytest -q
+MODEL_DEMO_TEST_MODEL=runtime/source-model uv run --frozen pytest -q
+```
+
+`src/` contains application code. `tests/` uses small local fixtures for fast checks
+without external services. The second command additionally tests the downloaded
+real checkpoint in a separate process with an empty cache and a Python socket
+guard. The guard detects attempted Python socket networking; it does not enforce
+OS-level isolation or cover native networking. Fixture tests do not demonstrate
+Hugging Face or Kubernetes integration.
 
 ## Local development cluster
 
-The documented setup uses Docker Desktop on macOS ARM64. One kind node keeps
-the infrastructure small. A managed cloud cluster would add
-cost and credentials without being necessary for the base assessment.
+Docker Desktop supplies Linux on macOS; kind creates a container acting as our
+single Kubernetes node. `kubectl` uses the endpoint and credentials in kubeconfig
+to communicate with it. One local node avoids cloud cost and credentials.
 
-On macOS, Docker Desktop supplies a Linux environment. kind creates a Docker
-container that acts as our Kubernetes node. `kubectl` talks to that cluster using
-the endpoint and credentials stored in its kubeconfig file.
+Tested tooling: Docker Engine **29.1.3**, kind **v0.33.0**, Kubernetes **v1.34.11**,
+and kubectl **v1.34.1**. kind and the node image digest in `k8s/kind.yaml` are pinned.
 
-Tested tooling (kind and the node image are explicitly pinned):
+### Install kind (macOS ARM64)
 
-- Docker Engine 29.1.3.
-- kind v0.33.0.
-- Kubernetes v1.34.11, pinned by image digest in `k8s/kind.yaml`.
-- kubectl v1.34.1.
-
-The node version keeps the existing kubectl on the same Kubernetes minor version.
-Python, model, and application dependency versions will be selected and tested
-in later milestones. Application dependencies are not installed yet.
-
-### Install the pinned kind binary (macOS ARM64)
-
-Use a project-specific tools directory outside the Git repository:
+Keep project tools outside the repository:
 
 ```bash
 export MODEL_DEMO_BIN="$HOME/.local/share/confidential-ml-distribution/bin"
@@ -107,14 +134,12 @@ export PATH="$MODEL_DEMO_BIN:$PATH"
 kind version
 ```
 
-For another supported OS/architecture, use the matching v0.33.0 release binary
-and checksum from the [official release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0).
-Do not use the macOS ARM64 binary or its checksum on another platform.
+Other platforms need their matching binary and checksum from the
+[v0.33.0 release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0).
 
 ### Start and check the cluster
 
-Run from the repository root. Keep cluster access credentials outside the repo.
-The explicit kubeconfig avoids changing the user's default Kubernetes context.
+From the repository root, start Docker and check its engine:
 
 ```bash
 open -a Docker
@@ -122,19 +147,17 @@ export DOCKER_CONTEXT=desktop-linux
 docker info --format 'os={{.OSType}} arch={{.Architecture}}'
 ```
 
-Docker Desktop starts asynchronously. Continue only after `docker info` succeeds;
-if it reports an unavailable socket, let Docker finish starting and repeat it.
+Startup is asynchronous: continue only after `docker info` succeeds. These startup
+commands are macOS-specific; other machines need their own working Docker context.
+The separate kubeconfig below avoids changing the default Kubernetes context.
 
 ```bash
 umask 077
 export MODEL_DEMO_KUBECONFIG="$HOME/.config/confidential-ml-distribution/kubeconfig"
 mkdir -p "$(dirname "$MODEL_DEMO_KUBECONFIG")"
 KIND_EXPERIMENTAL_PROVIDER=docker kind create cluster \
-  --name model-demo \
-  --config k8s/kind.yaml \
-  --kubeconfig "$MODEL_DEMO_KUBECONFIG" \
-  --wait 180s
-
+  --name model-demo --config k8s/kind.yaml \
+  --kubeconfig "$MODEL_DEMO_KUBECONFIG" --wait 180s
 kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   wait --for=condition=Ready node --all --timeout=120s
 kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
@@ -144,38 +167,32 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   get pods --all-namespaces
 ```
 
-`open -a Docker` and `desktop-linux` are specific to this macOS setup. Other
-machines need a running supported container runtime and its own context.
+## Verification
 
-Future application commands will also select a dedicated `model-demo` namespace.
-No application workloads or namespace are created in this milestone.
+- kind checksum matched; cluster creation and readiness checks exited 0. One node
+  and all nine system Pods were Ready; API bound to loopback; kubeconfig mode 0600.
+- Anonymous source download passed: four files, 17,975,651 bytes in total.
+- Separate local load passed: `BertForPreTraining`, CPU, 4,433,468 parameters,
+  nine input tokens, output shape `[1, 9, 30522]`, finite output, no loading errors.
+- Offline fixture suite: **23 passed, 1 skipped** (the real model test is opt-in).
+- With `MODEL_DEMO_TEST_MODEL=runtime/source-model`: **24 passed**, including the
+  real checkpoint in a new process with an empty cache and zero observed Python
+  socket attempts. Missing/unsafe files and corrupt/incomplete weights failed.
 
-### Verification
-
-Observed results from the commands above:
-
-- kind installation: the binary SHA-256 matched the official release checksum.
-- Cluster creation and readiness checks: exit 0; one node Ready and all nine
-  system Pods Ready and Running.
-- The API port was bound to loopback only; the separate kubeconfig had mode 0600.
-
-These checks verify the local infrastructure only. Model loading, encryption,
-HF publication, application Jobs, signing, and attestation have not been tested.
+Encryption, HF upload, application Jobs, signing, and attestation remain untested.
 The full setup has not yet been repeated on a second clean machine.
 
-### Troubleshooting and cleanup
+## Troubleshooting and cleanup
 
-- **Docker socket unavailable:** start Docker Desktop and wait until `docker
-  info` succeeds before creating the cluster.
-- **Cluster already exists:** inspect it using the explicit kubeconfig and
-  context; do not create or replace unrelated clusters.
-- **Image download fails:** inspect the reported network/registry error. The
-  pinned image must be available; do not silently substitute an untested tag.
-- **Node is not Ready:** inspect system Pods and Docker's available resources.
-  A Ready node is infrastructure evidence, not proof of the model pipeline.
+- **Existing model directory:** run `load` against it; use a new path for a fresh
+  download. An incomplete folder is an error, not a trigger to fetch missing files.
+- **Docker socket unavailable:** wait for `docker info` to succeed before kind.
+- **Cluster already exists:** inspect it with the explicit kubeconfig/context.
+- **Image download fails:** inspect the network error; do not substitute the pin.
+- **Node not Ready:** inspect system Pods and Docker resources. Readiness alone
+  does not demonstrate the model pipeline.
 
-When the local cluster is no longer needed, the following removes only this
-project's cluster and all of its in-cluster resources:
+To remove this project's local cluster and all its in-cluster resources:
 
 ```bash
 DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete cluster \
@@ -184,36 +201,25 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
 
 ## Credentials and publication
 
-- Keep real AES keys, signing private keys, Hub tokens, and kubeconfig files
-  outside this repository. Never put them in command arguments, logs, images,
-  or committed YAML.
-- `.gitignore` provides defensive exclusions. It does not protect already
-  tracked files, Docker builds, or Hub uploads.
-- `.dockerignore` denies files by default and permits only planned source and
-  dependency declarations. Future Dockerfiles will use explicit `COPY` paths.
-- `artifacts/` and `runtime/` are reserved ignored paths for generated public
-  outputs and local working files. Neither directory exists yet.
-- The AES key decrypts the artifact. The HF token authorizes Hub operations.
-  The optional signing private key identifies the Producer. They are distinct.
-- Public Git and Hub destinations must be identified and authorized before any
-  publication. No model, key, or artifact has been published.
+- Keep AES keys, signing private keys, Hub tokens, and kubeconfigs outside the repo;
+  never embed them in arguments, logs, images, or committed YAML.
+- `.gitignore` excludes generated `runtime/` and `artifacts/` paths defensively;
+  it does not protect tracked files, Docker builds, or Hub uploads. `.dockerignore`
+  permits source and dependency declarations only; use explicit Docker `COPY` paths.
+- The AES key decrypts the artifact; the HF token authorizes Hub operations;
+  the optional signing private key identifies Producer. They are distinct.
+- [Public Git repository](https://github.com/adeavid/confidential-ml-distribution)
+  is authorized. An HF test destination still needs authorization; no model, key,
+  or encrypted artifact has been published.
 
 ## Next milestones
 
-1. Load a real small model locally from a fixed source commit.
-2. Add authenticated encryption and fast negative tests.
-3. Publish and retrieve only the intended encrypted files on HF Hub.
-4. Run Producer and Consumer in Kubernetes, including Secret provisioning.
-5. Reproduce and explain Layer 1, then add Layer 2.
+Add authenticated encryption, then publish and retrieve
+the intended encrypted files. Run both Jobs with Secret provisioning and reproduce
+Layer 1 before adding Layer 2. Layer 3 is deferred: this macOS/kind setup has not
+been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
+isolation from the host. Production key rotation/revocation, strict attestation
+policy, and real confidential hardware are future extensions.
 
-Layer 3 is deferred. This macOS/kind setup has not been validated for Kata/CoCo.
-Development sample attestation does not prove hardware-backed isolation from
-the host. Production rotation/revocation, strict attestation policy, and real
-confidential hardware remain possible extensions.
-
-## References
-
-- [Kubernetes Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
-- [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
-- [kind quick start](https://kind.sigs.k8s.io/docs/user/quick-start/)
-- [CoCo development-mode reference](https://confidentialcontainers.org/blog/2024/12/03/confidential-containers-without-confidential-hardware/)
+References: [Secrets](https://kubernetes.io/docs/concepts/configuration/secret/), [Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/),
+[kind](https://kind.sigs.k8s.io/docs/user/quick-start/), [CoCo development reference](https://confidentialcontainers.org/blog/2024/12/03/confidential-containers-without-confidential-hardware/).

@@ -1,0 +1,26 @@
+[project]
+name = "confidential-ml-distribution"
+version = "0.1.0"
+description = "Confidential ML model distribution proof of concept"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "huggingface-hub==1.31.0",
+    "safetensors==0.8.0",
+    "torch==2.14.0",
+    "transformers==5.17.0",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
