@@ -2,9 +2,9 @@
 
 A reproducible technical assessment implementation with explainable decisions and demonstrated failures.
 
-**Current status:** local Kubernetes infrastructure and a real model encryption,
-decryption, and CPU load have passed. Hub publication and Producer/Consumer Jobs
-are not implemented. **Layer 1 is incomplete.** See [verification](#verification).
+**Current status:** encryption, real Hub publication, anonymous retrieval, and
+local CPU loading have passed. Local Kubernetes infrastructure is ready, but
+Producer/Consumer Jobs are not implemented. **Layer 1 is incomplete.** See [verification](#verification).
 
 ## Scope and acceptance
 
@@ -15,7 +15,7 @@ Evaluate Layer 3 afterwards only if the environment and time allow.
 | Requirement | Implementation / plan | Acceptance evidence | Status |
 | --- | --- | --- | --- |
 | L1: select and encrypt a small open model | Pinned BERT; bounded ZIP and AES-256-GCM | Real local round trip and CPU load; negative tests | Local round trip passed |
-| L1: publish encrypted artifact on HF Hub | Explicit file list; authorized test repository | Resulting full commit ID and uploaded file names | Pending |
+| L1: publish encrypted artifact on HF Hub | Single-file commit in authorized public test repository | Full commit and anonymous download of identical ciphertext | Passed using local processes |
 | L1: deliver key through a Kubernetes Secret | Bootstrap provisions Secret; Consumer mounts it read-only | Fresh Pod reads key without Kubernetes API credentials | Pending |
 | L1: download, decrypt, load in Kubernetes | Consumer Job uses pinned revision and decrypted local directory | Fresh Job completes; missing files fail without fallback | Pending |
 | L2: sign and verify before decryption | Ed25519 over complete artifact; trusted public key | Missing/invalid signature or wrong key aborts before decryption | Pending |
@@ -168,6 +168,49 @@ not securely erased. Host administrators remain trusted.
 
 API reference: [cryptography 50.0.1 AESGCM](https://cryptography.io/en/50.0.1/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM).
 
+## Hub round trip with local processes
+
+Use your own authorized test repository. From an interactive terminal, authenticate
+with the browser option; do not paste tokens into commands, source code or chat:
+
+```bash
+umask 077
+uv run --frozen hf auth login --format human --no-add-to-git-credential
+```
+
+After the local encryption step, publish its ciphertext and copy the full
+`revision` from the JSON result into `MODEL_DEMO_HF_REVISION`:
+
+```bash
+export MODEL_DEMO_HF_REPO="<your-user>/confidential-ml-artifacts"
+uv run --frozen python src/hub_artifact.py publish \
+  --repo "$MODEL_DEMO_HF_REPO" --artifact artifacts/model.cml
+export MODEL_DEMO_HF_REVISION="<full-commit-returned-by-publish>"
+uv run --frozen python src/hub_artifact.py download \
+  --repo "$MODEL_DEMO_HF_REPO" --revision "$MODEL_DEMO_HF_REVISION" \
+  --destination runtime/hub-model.cml
+uv run --frozen python src/artifact.py decrypt \
+  --artifact runtime/hub-model.cml --key-file "$MODEL_DEMO_KEY_DIR/model-v1.key" \
+  --destination runtime/hub-decrypted-model && \
+uv run --frozen python src/model_demo.py load runtime/hub-decrypted-model
+```
+
+Keep the matching local key from that publication. Creating another key cannot
+decrypt an existing artifact. The source-model commit and the encrypted-artifact
+commit belong to different repositories and identify different files.
+Both download and decryption destinations must be new; change both paths to repeat the demo.
+
+Publication creates a public model repository if needed, refuses unexpected
+existing files, and commits **only `model.cml`**, from bytes already read after
+checking their header and size. `.gitattributes` is created by Hugging Face.
+A parent-commit check aborts if another writer changes the branch before our
+commit; publication conflicts are not automatically retried.
+The publisher never receives the AES key. Retrieval uses `token=False`, a full
+commit ID and a fresh temporary cache. It checks Hub metadata size before download,
+then actual size and format before creating a new local file. This trusts Hub's
+HTTPS metadata service; AES-GCM separately authenticates the downloaded content.
+SDK mocks test these decisions locally and are not evidence of Hub integration.
+
 ## Local development cluster
 
 Docker Desktop supplies Linux on macOS; kind creates a container acting as our
@@ -237,15 +280,23 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   nine input tokens, output shape `[1, 9, 30522]`, finite output, no loading errors.
 - Local artifact suite: **48 passed** using tiny fixtures, without network or
   PyTorch. Covers authentication failures, unsafe ZIP entries, limits and permissions.
-- With `MODEL_DEMO_TEST_MODEL=runtime/source-model`: **73 passed**, including the
-  real checkpoint and its encrypted round trip in new processes with empty caches
+- Hub protocol suite: **22 passed**, using mocked SDK calls to check file selection,
+  revision pinning, limits, cache paths and publication conflicts.
+- With `MODEL_DEMO_TEST_MODEL=runtime/hub-decrypted-model`: **95 passed**, including the
+  retrieved checkpoint and its encrypted round trip in new processes with empty caches
   and zero observed Python socket attempts. The two real-model tests are opt-in.
 - Real CLI encryption produced a 17,987,550-byte artifact. Decrypted source files
   and the bundled license were byte-identical; the recovered model loaded on CPU.
   Wrong key, changed ciphertext, changed tag and truncation each exited 1 with an
   authentication error and no recovered directory. The AES key was 32 bytes, mode 0600.
+- Real public Hub artifact: [adeavid/confidential-ml-artifacts](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/ceec126ff0ea4cb81e381eaa4270ac5078a1a414),
+  revision `ceec126ff0ea4cb81e381eaa4270ac5078a1a414`. The revision contains only
+  `model.cml` and the Hub-generated `.gitattributes`; the AES key was not uploaded.
+  Anonymous retrieval returned byte-identical ciphertext; decryption recovered
+  the original files, and the recovered model completed the CPU forward pass.
+  Artifact SHA-256: `ede783b080c362145a38ca8f3940f02158c25122459039ea352bac9919112226`.
 
-HF upload, application Jobs, signing, and attestation remain untested.
+Application Jobs, Secret provisioning, signing, and attestation remain untested.
 The full setup has not yet been repeated on a second clean machine.
 
 ## Troubleshooting and cleanup
@@ -256,6 +307,10 @@ The full setup has not yet been repeated on a second clean machine.
   abort on mismatch. Do not bypass authentication or download the original model.
 - **Encryption output already exists:** use fresh artifact and key names; overwriting
   either independently could lose the key needed for an existing artifact.
+- **Hub 401/403:** check the logged-in account and repository write permission.
+- **Unauthenticated download warning:** expected for our public download; no token is needed.
+- **Hub commit conflict:** inspect the changed remote repository before retrying;
+  never silently publish on top of a revision you have not checked.
 - **Docker socket unavailable:** wait for `docker info` to succeed before kind.
 - **Cluster already exists:** inspect it with the explicit kubeconfig/context.
 - **Image download fails:** inspect the network error; do not substitute the pin.
@@ -279,12 +334,12 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
 - The AES key decrypts the artifact; the HF token authorizes Hub operations;
   the optional signing private key identifies Producer. They are distinct.
 - [Public Git repository](https://github.com/adeavid/confidential-ml-distribution)
-  is authorized. An HF test destination still needs authorization; no model, key,
-  or encrypted artifact has been published.
+  and `adeavid/confidential-ml-artifacts` on Hugging Face are authorized destinations.
+  Only the encrypted model artifact was uploaded to the Hub; keys remain local.
 
 ## Next milestones
 
-Publish and retrieve the intended encrypted files. Run both Jobs with Secret provisioning and reproduce
+Add Dockerfiles, then run both Jobs with Secret provisioning and reproduce
 Layer 1 before adding Layer 2. Layer 3 is deferred: this macOS/kind setup has not
 been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
 isolation from the host. Production key rotation/revocation, strict attestation

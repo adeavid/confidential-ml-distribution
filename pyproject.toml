@@ -5,6 +5,7 @@ description = "Confidential ML model distribution proof of concept"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "cryptography==50.0.1",
+    "httpx==0.28.1",
     "huggingface-hub==1.31.0",
     "safetensors==0.8.0",
     "torch==2.14.0",
