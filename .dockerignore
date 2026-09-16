@@ -1,7 +1,9 @@
-# Deny by default. Only source and dependency declarations may enter a build.
+# Deny by default. Only source, model license and dependencies may enter a build.
 **
 !pyproject.toml
 !uv.lock
+!licenses/
+!licenses/model-APACHE-2.0.txt
 !requirements*.txt
 !src/
 !src/**

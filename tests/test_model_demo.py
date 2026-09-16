@@ -302,3 +302,19 @@ def test_real_model_loads_with_empty_cache_and_python_socket_guard(tmp_path):
     result = socket_guarded_load(directory, tmp_path)
     assert result["model_class"] == "BertForPreTraining"
     assert result["output_shape"] == [1, 9, 30522]
+
+
+@pytest.mark.skipif(not os.environ.get("MODEL_DEMO_TEST_MODEL"), reason="Real model path not supplied")
+def test_real_encrypted_round_trip_loads_with_empty_cache_and_python_socket_guard(tmp_path):
+    from artifact import LICENSE_PATH, decrypt_package, encrypt_package, extract_package, pack_model
+
+    source = Path(os.environ["MODEL_DEMO_TEST_MODEL"]).expanduser().resolve()
+    encrypted, key = encrypt_package(pack_model(source))
+    recovered = tmp_path / "recovered-model"
+    extract_package(decrypt_package(encrypted, key), recovered)
+    for filename in model_demo.SOURCE_FILES:
+        assert (recovered / filename).read_bytes() == (source / filename).read_bytes()
+    assert (recovered / "LICENSE").read_bytes() == LICENSE_PATH.read_bytes()
+    result = socket_guarded_load(recovered, tmp_path)
+    assert result["model_class"] == "BertForPreTraining"
+    assert result["output_shape"] == [1, 9, 30522]

@@ -2,9 +2,9 @@
 
 A reproducible technical assessment implementation with explainable decisions and demonstrated failures.
 
-**Current status:** local Kubernetes infrastructure and a real CPU model load
-have passed. Encryption, Hub publication, and Producer/Consumer Jobs are not
-implemented. **Layer 1 is incomplete.** See [verification](#verification).
+**Current status:** local Kubernetes infrastructure and a real model encryption,
+decryption, and CPU load have passed. Hub publication and Producer/Consumer Jobs
+are not implemented. **Layer 1 is incomplete.** See [verification](#verification).
 
 ## Scope and acceptance
 
@@ -14,7 +14,7 @@ Evaluate Layer 3 afterwards only if the environment and time allow.
 
 | Requirement | Implementation / plan | Acceptance evidence | Status |
 | --- | --- | --- | --- |
-| L1: select and encrypt a small open model | Pinned BERT; planned AES-256-GCM package | Real local load; encryption round trip and malformed-input failures | Local load passed; encryption pending |
+| L1: select and encrypt a small open model | Pinned BERT; bounded ZIP and AES-256-GCM | Real local round trip and CPU load; negative tests | Local round trip passed |
 | L1: publish encrypted artifact on HF Hub | Explicit file list; authorized test repository | Resulting full commit ID and uploaded file names | Pending |
 | L1: deliver key through a Kubernetes Secret | Bootstrap provisions Secret; Consumer mounts it read-only | Fresh Pod reads key without Kubernetes API credentials | Pending |
 | L1: download, decrypt, load in Kubernetes | Consumer Job uses pinned revision and decrypted local directory | Fresh Job completes; missing files fail without fallback | Pending |
@@ -67,8 +67,9 @@ Linux selects the PyTorch CPU index; **Linux application execution is not tested
 Source: [Google BERT Tiny](https://huggingface.co/google/bert_uncased_L-2_H-128_A-2/tree/30b0a37ccaaa32f332884b96992754e246e48c5f),
 revision `30b0a37ccaaa32f332884b96992754e246e48c5f`, public and requiring no token.
 `src/model_demo.py` downloads only `config.json`, `model.safetensors` (17.7 MB),
-`vocab.txt`, and the original `README.md`. The model card declares Apache-2.0;
-preserve its attribution and include the license text before redistributing a package.
+`vocab.txt`, and the original `README.md`. The model card declares Apache-2.0.
+Packaging preserves that card and includes `licenses/model-APACHE-2.0.txt` as
+`LICENSE`, copied from the [official Apache text](https://www.apache.org/licenses/LICENSE-2.0.txt).
 
 Run from the repository root:
 
@@ -102,10 +103,70 @@ MODEL_DEMO_TEST_MODEL=runtime/source-model uv run --frozen pytest -q
 
 `src/` contains application code. `tests/` uses small local fixtures for fast checks
 without external services. The second command additionally tests the downloaded
-real checkpoint in a separate process with an empty cache and a Python socket
+real checkpoint and its encrypted round trip in separate processes with empty caches and a Python socket
 guard. The guard detects attempted Python socket networking; it does not enforce
 OS-level isolation or cover native networking. Fixture tests do not demonstrate
 Hugging Face or Kubernetes integration.
+
+## Local encrypted round trip
+
+After the source download, run from the repository root. Commands pass a key
+**file path**, never key bytes. All output paths must be new; use new names for
+another encryption. Each encryption generates a new key.
+
+```bash
+export MODEL_DEMO_KEY_DIR="$HOME/.config/confidential-ml-distribution/keys"
+install -d -m 700 "$MODEL_DEMO_KEY_DIR" artifacts runtime
+uv run --frozen python src/artifact.py encrypt \
+  --source runtime/source-model --artifact artifacts/model.cml \
+  --key-file "$MODEL_DEMO_KEY_DIR/model-v1.key"
+uv run --frozen python src/artifact.py decrypt \
+  --artifact artifacts/model.cml --key-file "$MODEL_DEMO_KEY_DIR/model-v1.key" \
+  --destination runtime/decrypted-model && \
+uv run --frozen python src/model_demo.py load runtime/decrypted-model
+```
+
+The key is a raw 32-byte file created exclusively with mode `0600`, outside the
+project, source, and artifact directories. Decryption accepts a regular key file
+via a symlink to accommodate future Kubernetes Secret volumes. This does not yet
+provision a Secret. Outputs are operator-controlled local paths; do not use shared
+writable parent directories. Interrupted two-file creation is not a crash-safe
+transaction: inspect leftovers and use fresh paths after an interruption.
+
+### Format and decisions
+
+```text
+Public header / AAD (17 bytes) = CMLD (4) + version 1 (1) + nonce (12)
+Artifact = header + ciphertext + GCM tag (16 bytes)
+```
+
+`artifact.py` uses `cryptography==50.0.1`'s high-level `AESGCM`: a fresh 256-bit
+key and a random 12-byte nonce for every encryption. The entire header is AAD
+(authenticated associated data). The library appends and checks the full tag.
+Never reuse a nonce with the same key. Wrong keys, changed nonces/ciphertext/tags,
+and truncation fail before ZIP parsing, extraction, or model loading; the tag
+cannot identify which of these caused authentication to fail.
+
+AES-GCM combines confidentiality and integrity in one supported API. AES-CBC
+with a separate MAC would require more composition and padding logic;
+ChaCha20-Poly1305 is also a valid alternative. AES-GCM does not authenticate a
+unique producer against other holders of the AES key; Layer 2 will add that.
+
+The encrypted payload is a **stored ZIP with no compression**, containing exactly
+the four source files and `LICENSE`. Names, duplicates, file types, sizes, CRC,
+and compression flags are checked; extraction writes fixed flat names without
+`extractall`. Links and other entry types are rejected. Only a fully extracted
+package becomes the destination; directories use `0700` and files `0600`.
+
+Limits: 32 MiB per file, 64 MiB for the complete ZIP, and 64 MiB + 33 bytes for
+the artifact. Full-buffer encryption is practical for this roughly 18 MB model;
+several copies coexist, so these limits are **not** a total RAM bound. Large
+models would require a separately designed streaming format. The header, artifact
+size, and any externally published filenames/revisions are public; model files
+and their internal names are encrypted. Python buffers and local plaintext are
+not securely erased. Host administrators remain trusted.
+
+API reference: [cryptography 50.0.1 AESGCM](https://cryptography.io/en/50.0.1/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM).
 
 ## Local development cluster
 
@@ -174,18 +235,27 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
 - Anonymous source download passed: four files, 17,975,651 bytes in total.
 - Separate local load passed: `BertForPreTraining`, CPU, 4,433,468 parameters,
   nine input tokens, output shape `[1, 9, 30522]`, finite output, no loading errors.
-- Offline fixture suite: **23 passed, 1 skipped** (the real model test is opt-in).
-- With `MODEL_DEMO_TEST_MODEL=runtime/source-model`: **24 passed**, including the
-  real checkpoint in a new process with an empty cache and zero observed Python
-  socket attempts. Missing/unsafe files and corrupt/incomplete weights failed.
+- Local artifact suite: **48 passed** using tiny fixtures, without network or
+  PyTorch. Covers authentication failures, unsafe ZIP entries, limits and permissions.
+- With `MODEL_DEMO_TEST_MODEL=runtime/source-model`: **73 passed**, including the
+  real checkpoint and its encrypted round trip in new processes with empty caches
+  and zero observed Python socket attempts. The two real-model tests are opt-in.
+- Real CLI encryption produced a 17,987,550-byte artifact. Decrypted source files
+  and the bundled license were byte-identical; the recovered model loaded on CPU.
+  Wrong key, changed ciphertext, changed tag and truncation each exited 1 with an
+  authentication error and no recovered directory. The AES key was 32 bytes, mode 0600.
 
-Encryption, HF upload, application Jobs, signing, and attestation remain untested.
+HF upload, application Jobs, signing, and attestation remain untested.
 The full setup has not yet been repeated on a second clean machine.
 
 ## Troubleshooting and cleanup
 
 - **Existing model directory:** run `load` against it; use a new path for a fresh
   download. An incomplete folder is an error, not a trigger to fetch missing files.
+- **Authentication failed:** verify the expected artifact/key pair and transfer;
+  abort on mismatch. Do not bypass authentication or download the original model.
+- **Encryption output already exists:** use fresh artifact and key names; overwriting
+  either independently could lose the key needed for an existing artifact.
 - **Docker socket unavailable:** wait for `docker info` to succeed before kind.
 - **Cluster already exists:** inspect it with the explicit kubeconfig/context.
 - **Image download fails:** inspect the network error; do not substitute the pin.
@@ -205,7 +275,7 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
   never embed them in arguments, logs, images, or committed YAML.
 - `.gitignore` excludes generated `runtime/` and `artifacts/` paths defensively;
   it does not protect tracked files, Docker builds, or Hub uploads. `.dockerignore`
-  permits source and dependency declarations only; use explicit Docker `COPY` paths.
+  permits source, the model license and dependencies only; use explicit Docker `COPY` paths.
 - The AES key decrypts the artifact; the HF token authorizes Hub operations;
   the optional signing private key identifies Producer. They are distinct.
 - [Public Git repository](https://github.com/adeavid/confidential-ml-distribution)
@@ -214,8 +284,7 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
 
 ## Next milestones
 
-Add authenticated encryption, then publish and retrieve
-the intended encrypted files. Run both Jobs with Secret provisioning and reproduce
+Publish and retrieve the intended encrypted files. Run both Jobs with Secret provisioning and reproduce
 Layer 1 before adding Layer 2. Layer 3 is deferred: this macOS/kind setup has not
 been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
 isolation from the host. Production key rotation/revocation, strict attestation
