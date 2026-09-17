@@ -5,7 +5,10 @@ Layer 1 delivers AES through a Secret. Layer 2 verifies the Producer's signature
 before decryption. The original model is public; this demonstrates the delivery
 mechanism, not secrecy of the original weights.
 
-**Layers 1 and 2 verified on local kind / Linux ARM64. Layer 3 is not implemented.**
+**Layers 1 and 2 verified on local kind / Linux ARM64.** The optional
+[Layer 3 lab](docs/layer3.md) also loaded the real model through Kata/CDH/Trustee
+on Linux AMD64, with and without signature verification, and rejected a fresh
+Consumer under deny-all. This is development attestation, not hardware-backed trust.
 Only Layer 1 is required by the assessment; the others are optional and independent.
 
 [Run the demo](#run-the-demo) · [Observed results](#observed-results) ·
@@ -30,8 +33,10 @@ process. Host and cluster administrators remain trusted.
 ## Prerequisites
 
 The commands below assume a POSIX shell and a local Docker engine. The complete
-route was tested on macOS ARM64 with Docker Desktop; Linux/AMD64 repetition is
-pending. Use the same terminal throughout so exported variables remain available.
+route was tested on macOS ARM64 with Docker Desktop. Both images also built on a
+fresh Linux AMD64 CI runner; the separate Layer 3 Consumer ran on an AMD64 VM.
+The entire Producer/bootstrap route has not been repeated on AMD64. Use the same
+terminal throughout so exported variables remain available.
 
 | Tool / access | Tested requirement |
 |---|---|
@@ -207,13 +212,19 @@ For a separate load-only check with container networking disabled, see
 ### Observed results
 
 On **2026-09-17**, the full suite with both real-model tests passed:
-**186 passed in 54.35 s**. This is an observed duration, not a runtime guarantee.
-A new local kind cluster then completed these real Hub/Kubernetes runs:
+**240 passed in 16.06 s**, including offline CDH and evidence-verifier checks. This is an
+observed duration, not a runtime guarantee. CDH fixtures do not prove attestation.
+A fresh local kind cluster also completed these real Hub/Kubernetes runs:
 
 | Layer | Namespace | Published revision | Result |
 |---|---|---|---|
 | 1 | `model-demo-l1-4307c63d` | [`50fc2f58f73427e2da8f99e1adebd05738e5f0b3`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/50fc2f58f73427e2da8f99e1adebd05738e5f0b3) | Producer/Consumer exit 0; wrong AES exits 1. |
 | 2 | `model-demo-l2-4a883a84` | [`83612572c07e98c4167b37d2897e4bf1863ac976`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/83612572c07e98c4167b37d2897e4bf1863ac976) | Signature verified and model loaded; wrong AES/public key exit 1. |
+
+The separate Linux AMD64 Layer 3 lab reused the Layer 2 artifact and matching AES
+key. Fresh Kata Jobs passed without a signature requirement and with signature
+verification (exit 0); another signed Job failed at CDH under deny-all (exit 1,
+no load). None mounted an AES Secret. See [commands and evidence](docs/layer3.md#observed-results).
 
 Both successful Consumers produced finite `[1, 9, 30522]` output on CPU from
 4,433,468 parameters. Anonymous Hub inspection found only the intended files.
@@ -227,11 +238,21 @@ layer cache; the new-cluster runs reused those images with neutral tags.
 | Bad/missing signature or wrong public key stops before AES | Offline call-order tests; wrong public key also tested in Kubernetes. |
 | Local files are sufficient; missing files cannot trigger fallback | Opt-in real-model tests with empty caches; separate Docker `--network none` load passed. |
 | Unsafe archive names, links, types and sizes rejected | Local package fixtures; no unsafe extraction paths accepted. |
-| Container packaging and manifest validity | Both Dockerfiles built; ten resource/workload templates passed API server dry-run. |
+| Container packaging and manifest validity | Both Dockerfiles built; base resource/workload templates passed API server dry-run; optional Kata Jobs executed on the lab cluster. |
+| Optional KBS key release | Real unsigned/signed model loads and a fresh policy-denied Consumer; no Secret fallback. |
 
 Missing/modified signatures were tested offline, not by corrupting public Hub
-contents. Fixture tests are not integration evidence. No fresh installation on
-an independent second machine has been completed.
+contents. Fixture tests are not integration evidence. The entire base demo has
+not been repeated by a second person from a clean clone. The portable Layer 3
+installer's parameterized form was reviewed, not rerun on a second fresh VM.
+
+The [CI workflow](.github/workflows/consumer-image.yml) tests local fixtures and
+builds both images on pull requests without user-provided secrets. Its first
+[successful clean-runner execution](https://github.com/adeavid/confidential-ml-distribution/actions/runs/35253400653)
+passed 221 tests with 2 opt-in model tests skipped, before the evidence-verifier
+tests were added. Manual publication uses a separate package-write job and pins
+the resulting public Consumer image by digest. These counts describe different
+test revisions, not additional integration runs.
 
 ## Troubleshooting
 
@@ -258,15 +279,12 @@ can access keys or plaintext. A valid signature does not prove model safety or
 freshness, and a pinned revision is not a complete anti-rollback system.
 Memory-backed temporary storage does not guarantee secure memory erasure.
 
-**Layer 3:** not implemented or verified. The current local node lacks `/dev/kvm`,
-so it cannot run the required Kata/QEMU flow as configured. A separate Linux
-x86_64 VM also lacked `/dev/kvm` and exposed no `vmx`/`svm` flags during a read-only
-check. No workloads were changed there. Another node must first demonstrate
-usable KVM and, if needed, nested virtualization. The assessment
-reference uses operator v0.10.0 and Trustee v0.10.1; current CoCo documentation
-uses Helm and deprecates the operator. A compatible stack retaining the required
-operator must be pinned and tested before implementation. Sample attestation
-would demonstrate the protocol, not hardware-backed protection from the host.
+**Layer 3:** a separate disposable Linux AMD64 VM has passed real nested KVM,
+Kata guest boot, full model loads through CDH/KBS, and policy rejection. See the separate
+[development lab guide](docs/layer3.md) for the fixed historical stack,
+reproduction steps and observed results. It retains the required CoCo operator.
+Sample attestation demonstrates the protocol, not hardware-backed protection
+from the host; this old Kubernetes baseline is not a production recommendation.
 
 Production rotation/revocation, strict attestation policies and real confidential
 hardware remain future work. References: [Kata prerequisites](https://github.com/kata-containers/kata-containers/blob/main/docs/quick-start-guide.md#try-it-out),
