@@ -1,6 +1,6 @@
 # Confidential ML Model Distribution PoC
 
-A reproducible technical assessment implementation with explainable decisions and demonstrated failures.
+A reproducible proof of concept for encrypted and authenticated ML model distribution.
 
 **Current status: Layers 1 and 2 implemented and verified on local kind/Linux ARM64.**
 Producer published a real encrypted artifact; a fresh Consumer Pod downloaded
@@ -69,9 +69,12 @@ revision `30b0a37ccaaa32f332884b96992754e246e48c5f`, public and requiring no tok
 Packaging preserves that card and includes `licenses/model-APACHE-2.0.txt` as
 `LICENSE`, copied from the [official Apache text](https://www.apache.org/licenses/LICENSE-2.0.txt).
 
-Run from the repository root:
+Clone the repository into any parent directory you choose. `$HOME` in the commands
+means your own home directory; no personal absolute paths are required.
 
 ```bash
+git clone https://github.com/adeavid/confidential-ml-distribution.git
+cd confidential-ml-distribution
 uv sync --frozen --python python3.12
 uv run --frozen python src/model_demo.py download runtime/source-model
 ```
@@ -460,20 +463,37 @@ the Python socket guard and does not require network access to the source model.
 
 ## Verification
 
+Latest integration runs on 2026-09-17 used a newly created `model-demo` kind
+cluster and the neutral names documented above. Previously tested application
+images were retagged and imported; application code and Dockerfiles were unchanged.
+
+| Run | Published Hub revision | Observed result |
+|---|---|---|
+| Layer 1: `model-demo-l1-4307c63d` | [`50fc2f58f73427e2da8f99e1adebd05738e5f0b3`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/50fc2f58f73427e2da8f99e1adebd05738e5f0b3) | Producer and new Consumer exited 0; wrong AES key exited 1 without loading. |
+| Layer 2: `model-demo-l2-4a883a84` | [`83612572c07e98c4167b37d2897e4bf1863ac976`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/83612572c07e98c4167b37d2897e4bf1863ac976) | Producer and new Consumer exited 0 with signature verified; wrong AES and public keys exited 1 without loading. |
+
+Both successful Consumers reported CPU and finite `[1, 9, 30522]` output.
+Anonymous Hub inspection confirmed only `.gitattributes` and `model.cml`, plus
+`model.cml.sig` for Layer 2. This was a fresh cluster on the existing machine,
+not an independent second-machine installation.
+
+Additional checks and earlier milestone evidence:
+
 - kind checksum matched; cluster creation and readiness checks exited 0. One node
   and all nine system Pods were Ready; API bound to loopback; kubeconfig mode 0600.
 - Anonymous source download passed: four files, 17,975,651 bytes in total.
 - Separate local load passed: `BertForPreTraining`, CPU, 4,433,468 parameters,
   nine input tokens, output shape `[1, 9, 30522]`, finite output, no loading errors.
-- Full suite from an isolated export of the final checkpoint, with
+- Full suite after the neutral-name cleanup, run from the working tree with
   `MODEL_DEMO_TEST_MODEL` pointing to the previously downloaded real checkpoint:
-  **186 passed in 18.86 seconds**.
+  **186 passed in 54.35 seconds**.
   Fixtures cover authentication failures, ZIP safety, size limits, permissions,
   atomic signed Hub publication, bootstrap safeguards and Ed25519 signatures.
   Bad or missing signatures stop before AES access; decryption uses the exact
   verified bytes even if the downloaded file changes afterwards. The two opt-in
   real-model tests used new processes with empty caches and zero Python socket attempts.
-- Both Dockerfiles built successfully from that export using the existing Docker
+- Both Dockerfiles previously built successfully from an isolated export of the
+  application checkpoint using the existing Docker
   layer cache. All ten workload/resource templates passed API server dry-run
   validation. This confirms packaging and manifest validity on the existing
   environment; it does not replace the real runs below or a second-machine test.
@@ -482,7 +502,7 @@ the Python socket guard and does not require network access to the source model.
 - Both images built for Linux ARM64, run as UID `10001`, and use PyTorch without
   CUDA. The real model also loaded from the Consumer image with `--network none`,
   a read-only root filesystem and fresh memory-backed working storage.
-- Full bootstrap passed (run namespace redacted): Producer completed with exit 0,
+- The earlier Layer 1 bootstrap completed: Producer completed with exit 0,
   publishing [revision `7f4108411a72e022a4df5492203755fc821df712`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/7f4108411a72e022a4df5492203755fc821df712); a new Consumer Pod
   retrieved that revision and completed with exit 0, CPU and finite `[1, 9, 30522]`
   output from 4,433,468 parameters. The wrong-key Job failed authentication with
@@ -500,7 +520,7 @@ the Python socket guard and does not require network access to the source model.
   missing/modified signature, modified ciphertext and truncation each exited 1.
   Ephemeral signing private keys were removed after this check. This run performed
   no publication, Kubernetes deployment, decryption or model loading.
-- Signed bootstrap passed on 2026-09-17 (run namespace redacted):
+- The earlier signed bootstrap passed on 2026-09-17:
   Producer published [revision `f8f92a7548ffb19e1f52d4df7902c2498b63cde3`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/f8f92a7548ffb19e1f52d4df7902c2498b63cde3)
   with `model.cml` (17,987,550 bytes) and `model.cml.sig` (64 bytes) in one commit.
   Anonymous inspection found only these files and `.gitattributes`.
@@ -562,10 +582,22 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
 
 ## Limitations and future work
 
-Layer 3 is deferred: this macOS/kind setup has not
-been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
-isolation from the host. Production key rotation/revocation, strict attestation
-policy, and real confidential hardware are future extensions.
+Layer 3 is deferred after a read-only feasibility check on 2026-09-17. The current
+Linux ARM64 kind node has no `/dev/kvm` device or KVM module; no CoCo RuntimeClass
+is installed. The missing virtualization prerequisite blocks the required
+Kata/QEMU flow in this setup. See the [Kata prerequisites](https://github.com/kata-containers/kata-containers/blob/main/docs/quick-start-guide.md#try-it-out).
+No CoCo/KBS components were installed, and no attestation flow was tested.
+
+Revisiting Layer 3 requires a compatible Linux node with usable KVM, including
+nested virtualization when applicable, and a tested, pinned software stack.
+The assessment reference uses operator v0.10.0 and Trustee v0.10.1; the
+[current installation guide](https://github.com/confidential-containers/charts/blob/main/QUICKSTART.md)
+uses Helm and deprecates the operator. We have not silently substituted that
+installation for the required operator.
+
+Sample attestation does not prove hardware-backed isolation from the host.
+Production key rotation/revocation, strict attestation policy, and real
+confidential hardware are future extensions.
 
 References: [Secrets](https://kubernetes.io/docs/concepts/configuration/secret/), [Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/),
 [kind](https://kind.sigs.k8s.io/docs/user/quick-start/), [CoCo development reference](https://confidentialcontainers.org/blog/2024/12/03/confidential-containers-without-confidential-hardware/).
