@@ -1,0 +1,15 @@
+FROM ghcr.io/astral-sh/uv:0.8.17@sha256:e4644cb5bd56fdc2c5ea3ee0525d9d21eed1603bccd6a21f887a938be7e85be1 AS uv
+FROM python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    uv sync --frozen --no-dev --no-cache --python /usr/local/bin/python
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid 10001 --no-create-home app \
+    && mkdir /work && chown 10001:10001 /work
+COPY src/ ./src/
+COPY licenses/model-APACHE-2.0.txt ./licenses/model-APACHE-2.0.txt
+ENV HOME=/work
+USER 10001:10001
+ENTRYPOINT ["python", "/app/src/producer.py"]

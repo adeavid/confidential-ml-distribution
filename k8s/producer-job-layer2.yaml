@@ -1,0 +1,106 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: producer
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: producer
+          image: model-producer:layer2
+          imagePullPolicy: Never
+          args:
+            - --repo
+            - $(HF_REPO)
+            - --key-file
+            - /run/secrets/model/key
+            - --work-dir
+            - /work
+            - --signing-key-file
+            - /run/secrets/signing/private.pem
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: HF_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: demo-settings
+                  key: HF_REPO
+            - name: HF_TOKEN_PATH
+              value: /run/secrets/hf/token
+            - name: TMPDIR
+              value: /work
+            - name: HF_HOME
+              value: /work/hf
+            - name: HF_HUB_CACHE
+              value: /work/hf/hub
+            - name: HF_XET_CACHE
+              value: /work/hf/xet
+            - name: TORCH_HOME
+              value: /work/torch
+            - name: HF_HUB_DISABLE_PROGRESS_BARS
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 16Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+              ephemeral-storage: 128Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: model-key
+              mountPath: /run/secrets/model
+              readOnly: true
+            - name: publisher-token
+              mountPath: /run/secrets/hf
+              readOnly: true
+            - name: signing-key
+              mountPath: /run/secrets/signing
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        - name: model-key
+          secret:
+            secretName: model-key
+            defaultMode: 0440
+            items:
+              - key: key
+                path: key
+        - name: publisher-token
+          secret:
+            secretName: hf-publisher-token
+            defaultMode: 0440
+            items:
+              - key: token
+                path: token
+        - name: signing-key
+          secret:
+            secretName: signing-key
+            defaultMode: 0440
+            items:
+              - key: private.pem
+                path: private.pem

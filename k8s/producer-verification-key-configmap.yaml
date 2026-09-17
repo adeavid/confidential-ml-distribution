@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: producer-verification-key
+immutable: true
+# Bootstrap supplies public.pem from its generated pair, independently of the Hub.
+data: {}

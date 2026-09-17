@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  # Bootstrap replaces this with a fresh model-demo-l1-* or model-demo-l2-* run name.
+  name: model-demo-l1
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.34
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.34
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.34

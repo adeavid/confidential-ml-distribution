@@ -1,0 +1,104 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consumer
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consumer
+          image: model-consumer:layer2
+          imagePullPolicy: Never
+          args:
+            - --repo
+            - $(HF_REPO)
+            - --revision
+            - $(HF_REVISION)
+            - --key-file
+            - /run/secrets/model/key
+            - --work-dir
+            - /work
+            - --require-signature
+            - --public-key-file
+            - /run/config/signing/public.pem
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: HF_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: demo-settings
+                  key: HF_REPO
+            - name: HF_REVISION
+              valueFrom:
+                configMapKeyRef:
+                  name: demo-settings
+                  key: HF_REVISION
+            - name: HF_HUB_DISABLE_IMPLICIT_TOKEN
+              value: "1"
+            - name: TMPDIR
+              value: /work
+            - name: HF_HOME
+              value: /work/hf
+            - name: HF_HUB_CACHE
+              value: /work/hf/hub
+            - name: HF_XET_CACHE
+              value: /work/hf/xet
+            - name: TORCH_HOME
+              value: /work/torch
+            - name: HF_HUB_DISABLE_PROGRESS_BARS
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 16Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+              ephemeral-storage: 128Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: model-key
+              mountPath: /run/secrets/model
+              readOnly: true
+            - name: verification-key
+              mountPath: /run/config/signing
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        - name: model-key
+          secret:
+            secretName: model-key
+            defaultMode: 0440
+            items:
+              - key: key
+                path: key
+        - name: verification-key
+          configMap:
+            name: producer-verification-key
+            defaultMode: 0440
+            items:
+              - key: public.pem
+                path: public.pem
