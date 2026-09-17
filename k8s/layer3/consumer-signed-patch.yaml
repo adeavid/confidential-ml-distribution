@@ -1,0 +1,33 @@
+# Apply as a strategic merge patch to the base Layer 3 template before rendering.
+# The public verification key comes from controlled configuration, not the Hub.
+metadata:
+  name: consumer-l3-signed
+spec:
+  template:
+    spec:
+      containers:
+        - name: consumer
+          args:
+            - --repo
+            - HUB_REPOSITORY
+            - --revision
+            - HUB_REVISION
+            - --cdh-resource
+            - default/key/my-model
+            - --work-dir
+            - /work
+            - --require-signature
+            - --public-key-file
+            - /run/config/signing/public.pem
+          volumeMounts:
+            - name: verification-key
+              mountPath: /run/config/signing
+              readOnly: true
+      volumes:
+        - name: verification-key
+          configMap:
+            name: producer-verification-key
+            defaultMode: 0440
+            items:
+              - key: public.pem
+                path: public.pem

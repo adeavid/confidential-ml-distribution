@@ -1,0 +1,51 @@
+# Kata development smoke: observed exit 0, guest kernel 6.7.0, and QEMU using KVM.
+# BusyBox Linux amd64 manifest and image configuration verified against Quay.
+# No Trustee, model key, or hardware-backed attestation is exercised here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: model-demo-l3-lab
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.30
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kata-smoke
+  namespace: model-demo-l3-lab
+spec:
+  runtimeClassName: kata-qemu-coco-dev
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 600
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: smoke
+      image: quay.io/prometheus/busybox@sha256:267c901b759acf876e23c8d36eb9e50315f7b795d651dc4062d0d02151698e25
+      imagePullPolicy: Always
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          printf 'kata-smoke-start\n'
+          uname -r
+          id -u
+          sleep 60
+          printf 'kata-smoke-complete\n'
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          cpu: "1"
+          memory: 256Mi

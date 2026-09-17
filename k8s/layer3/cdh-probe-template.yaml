@@ -1,0 +1,56 @@
+# Component probe only: a real Kata guest requests a disposable 32-byte resource.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: CDH_PROBE_NAME
+  namespace: model-demo-l3-lab
+  annotations:
+    io.katacontainers.config.hypervisor.kernel_params: "agent.aa_kbc_params=cc_kbc::KBS_URL_HERE"
+spec:
+  runtimeClassName: kata-qemu-coco-dev
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 300
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: quay.io/prometheus/busybox@sha256:267c901b759acf876e23c8d36eb9e50315f7b795d651dc4062d0d02151698e25
+      imagePullPolicy: Always
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          umask 077
+          trap 'rm -f /work/key' EXIT
+          if ! wget -q -T 70 -O /work/key http://127.0.0.1:8006/cdh/resource/default/key/probe 2>/dev/null; then
+            printf 'CDH_REQUEST_REJECTED\n'
+            exit 1
+          fi
+          test "$(wc -c < /work/key)" -eq 32
+          printf 'CDH_RECEIVED_32_BYTES\n'
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          cpu: "1"
+          memory: 256Mi
+      volumeMounts:
+        - name: work
+          mountPath: /work
+  volumes:
+    - name: work
+      emptyDir:
+        medium: Memory
+        sizeLimit: 1Mi

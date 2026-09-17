@@ -1,0 +1,218 @@
+# Derived from Confidential Containers upstream manifests; SPDX-License-Identifier: Apache-2.0
+# Historical Linux amd64 lab: KBS started successfully as UID 10001.
+# Based on Trustee v0.10.1, commit 68607d4300dda5a8ae948e2562fd06d09cbd7eca:
+# https://github.com/confidential-containers/trustee/tree/68607d4300dda5a8ae948e2562fd06d09cbd7eca/kbs/config/kubernetes/base
+# Main image: built-in-as-v0.10.1, verified Linux amd64 digest; see ../../docs/layer3.md.
+# Required external ConfigMap: trustee-lab/kbs-admin-public, key kbs.pem (PUBLIC key only).
+# Application state is ephemeral. A replacement Pod starts with no resources and deny-all policy.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trustee-lab
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.30
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kbs-config
+  namespace: trustee-lab
+immutable: true
+data:
+  kbs-config.toml: |
+    # This isolated lab uses HTTP inside the cluster; admin authentication stays enabled.
+    sockets = ["0.0.0.0:8080"]
+    auth_public_key = "/kbs/kbs.pem"
+    insecure_api = false
+    insecure_http = true
+
+    [repository_config]
+    type = "LocalFs"
+    dir_path = "/opt/confidential-containers/kbs/repository"
+
+    [policy_engine_config]
+    policy_path = "/opa/confidential-containers/kbs/policy.rego"
+
+    [attestation_token_config]
+    attestation_token_type = "CoCo"
+
+    [as_config]
+    work_dir = "/opt/confidential-containers/attestation-service"
+    policy_engine = "opa"
+    attestation_token_broker = "Simple"
+
+    [as_config.attestation_token_config]
+    duration_min = 5
+
+    [as_config.rvps_config]
+    store_type = "LocalFs"
+    remote_addr = ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kbs-initial-policy
+  namespace: trustee-lab
+immutable: true
+data:
+  policy.rego: |
+    # Trustee v0.10.1 resource policy: start closed until an authenticated admin changes it.
+    package policy
+
+    default allow = false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kbs
+  namespace: trustee-lab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kbs
+  template:
+    metadata:
+      labels:
+        app: kbs
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: initialize-policy
+          image: quay.io/prometheus/busybox@sha256:267c901b759acf876e23c8d36eb9e50315f7b795d651dc4062d0d02151698e25
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 077
+              cp /initial-policy/policy.rego /opa/confidential-containers/kbs/policy.rego
+              chmod 600 /opa/confidential-containers/kbs/policy.rego
+              mkdir -p /opt/confidential-containers/kbs/repository
+              mkdir -p /opt/confidential-containers/attestation-service/reference_values
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          volumeMounts:
+            - name: initial-policy
+              mountPath: /initial-policy
+              readOnly: true
+            - name: policy
+              mountPath: /opa/confidential-containers/kbs
+            - name: state
+              mountPath: /opt/confidential-containers
+      containers:
+        - name: kbs
+          image: ghcr.io/confidential-containers/key-broker-service@sha256:60f3ed37b3450b96d37d5584da04c285a2c57d3879e1ef9f3f969dfd0e1881e8
+          imagePullPolicy: IfNotPresent
+          workingDir: /tmp
+          # Set umask before exec so stored model resources are not world-readable.
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 077
+              exec /usr/local/bin/kbs --config-file /etc/kbs/kbs-config.toml
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: TMPDIR
+              value: /tmp
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: admin-public
+              mountPath: /kbs
+              readOnly: true
+            - name: configuration
+              mountPath: /etc/kbs
+              readOnly: true
+            - name: policy
+              mountPath: /opa/confidential-containers/kbs
+            - name: state
+              mountPath: /opt/confidential-containers
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: admin-public
+          configMap:
+            name: kbs-admin-public
+            defaultMode: 0444
+            items:
+              - key: kbs.pem
+                path: kbs.pem
+        - name: configuration
+          configMap:
+            name: kbs-config
+            defaultMode: 0444
+        - name: initial-policy
+          configMap:
+            name: kbs-initial-policy
+            defaultMode: 0444
+        - name: policy
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: state
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kbs
+  namespace: trustee-lab
+spec:
+  type: ClusterIP
+  selector:
+    app: kbs
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

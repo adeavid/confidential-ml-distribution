@@ -1,0 +1,81 @@
+# Render IMAGE_REFERENCE, HUB_REPOSITORY, HUB_REVISION and KBS_URL before applying.
+# The base Layer 3 Job works independently of Layer 2. No AES Secret is mounted.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consumer-l3
+  namespace: model-demo-l3-lab
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      annotations:
+        # Kata 3.9 stores guest-pulled layers in /run (tmpfs, 50% of boot RAM).
+        # The PyTorch image cannot unpack with the default 2048 MiB guest.
+        io.katacontainers.config.hypervisor.default_memory: "6144"
+        io.katacontainers.config.hypervisor.kernel_params: "agent.aa_kbc_params=cc_kbc::KBS_URL"
+    spec:
+      runtimeClassName: kata-qemu-coco-dev
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consumer
+          image: IMAGE_REFERENCE
+          imagePullPolicy: Always
+          args:
+            - --repo
+            - HUB_REPOSITORY
+            - --revision
+            - HUB_REVISION
+            - --cdh-resource
+            - default/key/my-model
+            - --work-dir
+            - /work
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: HF_HUB_DISABLE_IMPLICIT_TOKEN
+              value: "1"
+            - name: TMPDIR
+              value: /work
+            - name: HF_HOME
+              value: /work/hf
+            - name: HF_HUB_CACHE
+              value: /work/hf/hub
+            - name: HF_XET_CACHE
+              value: /work/hf/xet
+            - name: TORCH_HOME
+              value: /work/torch
+            - name: HF_HUB_DISABLE_PROGRESS_BARS
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 16Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+              ephemeral-storage: 128Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
