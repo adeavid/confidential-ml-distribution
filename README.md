@@ -168,6 +168,66 @@ not securely erased. Host administrators remain trusted.
 
 API reference: [cryptography 50.0.1 AESGCM](https://cryptography.io/en/50.0.1/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM).
 
+## Local signature commands
+
+This checkpoint adds standalone Ed25519 signing and verification. It does not
+yet integrate signatures into Hub publication or Kubernetes workloads. Layer 2
+remains incomplete until Consumer enforces verification before decryption.
+
+After creating `artifacts/model.cml` above, run from the repository root:
+
+```bash
+export MODEL_DEMO_SIGNING_DIR="$HOME/.config/confidential-ml-distribution/signing"
+install -d -m 700 "$MODEL_DEMO_SIGNING_DIR" runtime/signing
+uv run --frozen python src/signing.py keygen \
+  --private-key "$MODEL_DEMO_SIGNING_DIR/producer-v1.pem" \
+  --public-key runtime/signing/producer-v1.public.pem
+uv run --frozen python src/signing.py sign \
+  --artifact artifacts/model.cml \
+  --private-key "$MODEL_DEMO_SIGNING_DIR/producer-v1.pem" \
+  --signature artifacts/model.cml.sig
+uv run --frozen python src/signing.py verify \
+  --artifact artifacts/model.cml \
+  --signature artifacts/model.cml.sig \
+  --public-key runtime/signing/producer-v1.public.pem
+uv run --frozen pytest -q tests/test_signing.py
+```
+
+Output paths must be new; use fresh names for another run. Success prints only
+JSON metadata. Failure exits 1. Verification neither decrypts nor loads a model.
+
+**Project choices:** [Ed25519 in cryptography 50.0.1](https://cryptography.io/en/50.0.1/hazmat/primitives/asymmetric/ed25519/)
+provides a fixed 64-byte signature and a simple API; this PoC has no requirement
+to interoperate with RSA-based systems. We sign the exact complete artifact bytes,
+including the public header, nonce, ciphertext and GCM tag, without a custom
+prehash or serialization. Keys use standard PEM: PKCS8 for private keys and
+SubjectPublicKeyInfo for public keys. Only Ed25519 keys are accepted.
+
+The signing private key is separate from the AES key and HF token. Key generation
+creates files exclusively with mode `0600`; private keys must stay outside the
+project and public output directories. The private PEM is **not password-encrypted**:
+use a private parent directory and a trusted host. Do not upload that directory.
+Mounted key-file symlinks are supported, while artifact/signature inputs must be
+regular files without symlinks. Reads are bounded, including 4 KiB per PEM file.
+
+The operator supplies the trusted public-key file independently. Its secrecy is
+unnecessary, but preventing unauthorized replacement is essential. Accepting an
+attacker's replacement public key would allow their signatures to pass. A valid
+signature identifies possession of the corresponding private key; it does not
+guarantee model safety, freshness or confidentiality after an AES-key leak.
+
+`verify_artifact()` returns the exact verified ciphertext buffer. Its caller
+must decrypt that buffer instead of reading the file again, so a replaced file
+cannot bypass the earlier check. AES-GCM and package validation remain mandatory.
+A future Layer 2 Consumer must reject absent or invalid signatures without
+falling back to unsigned Layer 1.
+
+The encryption helper also accepts an explicitly supplied 32-byte key and always
+generates a fresh nonce. This supports later Secret provisioning and a negative
+test: another AES-key holder can create a valid GCM artifact, but cannot reuse
+the original Producer signature for the replacement. The local encryption CLI
+continues to generate a fresh key for each artifact.
+
 ## Hub round trip with local processes
 
 Use your own authorized test repository. From an interactive terminal, authenticate
@@ -282,9 +342,13 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   PyTorch. Covers authentication failures, unsafe ZIP entries, limits and permissions.
 - Hub protocol suite: **22 passed**, using mocked SDK calls to check file selection,
   revision pinning, limits, cache paths and publication conflicts.
-- With `MODEL_DEMO_TEST_MODEL=runtime/hub-decrypted-model`: **95 passed**, including the
+- Isolated staged checkpoint with `MODEL_DEMO_TEST_MODEL` pointing to the previously
+  downloaded real model: **123 passed in 11.70 seconds**, including the
   retrieved checkpoint and its encrypted round trip in new processes with empty caches
   and zero observed Python socket attempts. The two real-model tests are opt-in.
+- The 28 signing checks include altered artifact regions, missing/invalid signatures,
+  wrong public keys, key-file formats, permissions, and a replacement artifact
+  that authenticates with AES but fails the original Producer signature.
 - Real CLI encryption produced a 17,987,550-byte artifact. Decrypted source files
   and the bundled license were byte-identical; the recovered model loaded on CPU.
   Wrong key, changed ciphertext, changed tag and truncation each exited 1 with an
@@ -296,7 +360,8 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   the original files, and the recovered model completed the CPU forward pass.
   Artifact SHA-256: `ede783b080c362145a38ca8f3940f02158c25122459039ea352bac9919112226`.
 
-Application Jobs, Secret provisioning, signing, and attestation remain untested.
+Local signing is tested separately; signed Hub/Consumer integration, application
+Jobs, Secret provisioning, and attestation are not included in this checkpoint.
 The full setup has not yet been repeated on a second clean machine.
 
 ## Troubleshooting and cleanup
@@ -340,8 +405,8 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
 ## Next milestones
 
 Add Dockerfiles, then run both Jobs with Secret provisioning and reproduce
-Layer 1 before adding Layer 2. Layer 3 is deferred: this macOS/kind setup has not
-been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
+Layer 1 before integrating signatures into Hub and Consumer. Layer 3 is deferred:
+this macOS/kind setup has not been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
 isolation from the host. Production key rotation/revocation, strict attestation
 policy, and real confidential hardware are future extensions.
 

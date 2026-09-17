@@ -87,11 +87,14 @@ def pack_model(source: Path) -> bytes:
     return package
 
 
-def encrypt_package(package: bytes) -> tuple[bytes, bytes]:
-    """Generate a fresh key for each artifact; callers cannot reuse a key."""
+def encrypt_package(package: bytes, *, key: bytes | None = None) -> tuple[bytes, bytes]:
+    """Use a fresh nonce, with a new local key or a key provisioned by bootstrap."""
     if not package or len(package) > MAX_PACKAGE_BYTES:
         raise ValueError("Package is empty or exceeds its size limit.")
-    key = AESGCM.generate_key(bit_length=256)
+    if key is None:
+        key = AESGCM.generate_key(bit_length=256)
+    if len(key) != 32:
+        raise ValueError("AES-256 key must contain exactly 32 bytes.")
     nonce = os.urandom(NONCE_BYTES)
     header = MAGIC + nonce
     # The public header is authenticated as associated data (AAD).
