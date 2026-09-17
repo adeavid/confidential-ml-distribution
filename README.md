@@ -112,7 +112,7 @@ Hugging Face or Kubernetes integration.
 
 After the source download, run from the repository root. Commands pass a key
 **file path**, never key bytes. All output paths must be new; use new names for
-another encryption. Each encryption generates a new key.
+another encryption. The local encryption CLI generates a new key each time.
 
 ```bash
 export MODEL_DEMO_KEY_DIR="$HOME/.config/confidential-ml-distribution/keys"
@@ -140,8 +140,9 @@ Public header / AAD (17 bytes) = CMLD (4) + version 1 (1) + nonce (12)
 Artifact = header + ciphertext + GCM tag (16 bytes)
 ```
 
-`artifact.py` uses `cryptography==50.0.1`'s high-level `AESGCM`: a fresh 256-bit
-key and a random 12-byte nonce for every encryption. The entire header is AAD
+`artifact.py` uses `cryptography==50.0.1`'s high-level `AESGCM`. The local CLI
+generates a fresh 256-bit key, while callers of the helper may supply a key.
+Every encryption generates a random 12-byte nonce. The entire header is AAD
 (authenticated associated data). The library appends and checks the full tag.
 Never reuse a nonce with the same key. Wrong keys, changed nonces/ciphertext/tags,
 and truncation fail before ZIP parsing, extraction, or model loading; the tag
@@ -170,9 +171,9 @@ API reference: [cryptography 50.0.1 AESGCM](https://cryptography.io/en/50.0.1/ha
 
 ## Local signature commands
 
-This checkpoint adds standalone Ed25519 signing and verification. It does not
-yet integrate signatures into Hub publication or Kubernetes workloads. Layer 2
-remains incomplete until Consumer enforces verification before decryption.
+Standalone Ed25519 signing and verification are available, with optional signed
+Hub publication below. Kubernetes workloads are a separate checkpoint; Layer 2
+remains incomplete here until Consumer enforces verification before decryption.
 
 After creating `artifacts/model.cml` above, run from the repository root:
 
@@ -260,16 +261,56 @@ decrypt an existing artifact. The source-model commit and the encrypted-artifact
 commit belong to different repositories and identify different files.
 Both download and decryption destinations must be new; change both paths to repeat the demo.
 
-Publication creates a public model repository if needed, refuses unexpected
-existing files, and commits **only `model.cml`**, from bytes already read after
-checking their header and size. `.gitattributes` is created by Hugging Face.
-A parent-commit check aborts if another writer changes the branch before our
-commit; publication conflicts are not automatically retried.
-The publisher never receives the AES key. Retrieval uses `token=False`, a full
-commit ID and a fresh temporary cache. It checks Hub metadata size before download,
-then actual size and format before creating a new local file. This trusts Hub's
-HTTPS metadata service; AES-GCM separately authenticates the downloaded content.
+Publication creates a public model repository if needed and refuses unexpected
+existing files. Its explicit upload list contains only `model.cml` and, when
+requested, `model.cml.sig`. `.gitattributes` is created by Hugging Face.
+Both files are sent in one `create_commit` call with an expected parent commit;
+a conflicting writer aborts publication without an automatic retry. Signed
+publication reports `signature_filename` alongside the resulting full revision.
+
+Publishing without a signature preserves the standalone Layer 1 interface.
+If a previous revision had a signature, it is deleted in the same new commit as
+the unsigned artifact, preventing a mismatched leftover. Earlier revisions are
+unchanged. Publication does not verify the supplied signature cryptographically;
+the signer is trusted to create it, and the receiver must verify it.
+
+The publication helper never receives AES or signing private keys. Retrieval uses
+`token=False`, a full commit ID and a fresh temporary cache. It checks that Hub
+metadata matches the requested revision and size limits, then validates the
+actual bytes before writing a new local file. A signature must be exactly 64 bytes.
+This trusts Hub's HTTPS metadata service; structural checks do not authenticate
+an artifact. Signature verification and AES-GCM remain separate required checks.
 SDK mocks test these decisions locally and are not evidence of Hub integration.
+
+### Signed Hub round trip
+
+After the local encryption and signature steps above, publish both files. This
+creates a new Hub revision; copy its complete commit ID into the variable below.
+Use new output paths if repeating the download. These commands verify the signed
+ciphertext; they do not decrypt or implement a Kubernetes Consumer.
+
+```bash
+uv run --frozen python src/hub_artifact.py publish \
+  --repo "$MODEL_DEMO_HF_REPO" --artifact artifacts/model.cml \
+  --signature artifacts/model.cml.sig
+export MODEL_DEMO_HF_REVISION="<full-commit-returned-by-signed-publish>"
+uv run --frozen python src/hub_artifact.py download \
+  --repo "$MODEL_DEMO_HF_REPO" --revision "$MODEL_DEMO_HF_REVISION" \
+  --destination runtime/hub-signed-model.cml
+uv run --frozen python src/hub_artifact.py download-signature \
+  --repo "$MODEL_DEMO_HF_REPO" --revision "$MODEL_DEMO_HF_REVISION" \
+  --destination runtime/hub-signed-model.cml.sig
+uv run --frozen python src/signing.py verify \
+  --artifact runtime/hub-signed-model.cml \
+  --signature runtime/hub-signed-model.cml.sig \
+  --public-key runtime/signing/producer-v1.public.pem
+```
+
+Both downloads must receive the same revision. Requesting a mutable branch twice
+could mix an artifact from one revision with a signature from another. The full
+commit requirement rejects `main`, and an absent signature fails without an
+unsigned fallback. Keep the public verification key in controlled local
+configuration; downloading a replacement trust key from the Hub is not permitted.
 
 ## Local development cluster
 
@@ -340,10 +381,11 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   nine input tokens, output shape `[1, 9, 30522]`, finite output, no loading errors.
 - Local artifact suite: **48 passed** using tiny fixtures, without network or
   PyTorch. Covers authentication failures, unsafe ZIP entries, limits and permissions.
-- Hub protocol suite: **22 passed**, using mocked SDK calls to check file selection,
-  revision pinning, limits, cache paths and publication conflicts.
+- Hub protocol suite: **38 passed**, using mocked SDK calls to check explicit file
+  selection, atomic signed commits, stale-signature removal for unsigned publication,
+  revision pinning, missing signatures, limits, cache paths and publication conflicts.
 - Isolated staged checkpoint with `MODEL_DEMO_TEST_MODEL` pointing to the previously
-  downloaded real model: **123 passed in 11.70 seconds**, including the
+  downloaded real model: **139 passed in 13.36 seconds**, including the
   retrieved checkpoint and its encrypted round trip in new processes with empty caches
   and zero observed Python socket attempts. The two real-model tests are opt-in.
 - The 28 signing checks include altered artifact regions, missing/invalid signatures,
@@ -360,8 +402,8 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   the original files, and the recovered model completed the CPU forward pass.
   Artifact SHA-256: `ede783b080c362145a38ca8f3940f02158c25122459039ea352bac9919112226`.
 
-Local signing is tested separately; signed Hub/Consumer integration, application
-Jobs, Secret provisioning, and attestation are not included in this checkpoint.
+Signed publication and retrieval are included here. Consumer integration,
+application Jobs, Secret provisioning, and attestation are separate work.
 The full setup has not yet been repeated on a second clean machine.
 
 ## Troubleshooting and cleanup
@@ -400,12 +442,12 @@ DOCKER_CONTEXT=desktop-linux KIND_EXPERIMENTAL_PROVIDER=docker kind delete clust
   the optional signing private key identifies Producer. They are distinct.
 - [Public Git repository](https://github.com/adeavid/confidential-ml-distribution)
   and `adeavid/confidential-ml-artifacts` on Hugging Face are authorized destinations.
-  Only the encrypted model artifact was uploaded to the Hub; keys remain local.
+  Uploads are limited to ciphertext and its optional signature; keys remain local.
 
 ## Next milestones
 
 Add Dockerfiles, then run both Jobs with Secret provisioning and reproduce
-Layer 1 before integrating signatures into Hub and Consumer. Layer 3 is deferred:
+Layer 1 before enforcing signed delivery in Consumer. Layer 3 is deferred:
 this macOS/kind setup has not been validated for Kata/CoCo. Sample attestation does not prove hardware-backed
 isolation from the host. Production key rotation/revocation, strict attestation
 policy, and real confidential hardware are future extensions.
