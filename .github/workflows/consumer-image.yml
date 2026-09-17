@@ -1,0 +1,72 @@
+name: Check and publish Consumer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# PR checks never receive package-write permission or user-provided credentials.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+      - name: Install the pinned environment
+        run: |
+          python -m pip install uv==0.8.17
+          uv sync --frozen
+      - name: Run offline fixture tests
+        run: uv run --frozen pytest -q
+      - name: Build both application images
+        run: |
+          docker buildx build --platform linux/amd64 --load --provenance=false \
+            -f Dockerfile.producer -t model-producer:check .
+          docker buildx build --platform linux/amd64 --load --provenance=false \
+            -f Dockerfile.consumer -t model-consumer:check .
+      - name: Check the packaged Consumer entrypoint without network
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges model-consumer:check --help
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'adeavid/confidential-ml-distribution' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/adeavid/confidential-ml-consumer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build from this exact source revision
+        run: |
+          docker buildx build --platform linux/amd64 --load --provenance=false \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -f Dockerfile.consumer -t "$IMAGE:$GITHUB_SHA" .
+      - name: Authenticate with the temporary workflow credential
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish and record the immutable reference
+        run: |
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker image inspect "$IMAGE:$GITHUB_SHA" --format '{{index .RepoDigests 0}}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Remove the registry login
+        if: always()
+        run: docker logout ghcr.io
