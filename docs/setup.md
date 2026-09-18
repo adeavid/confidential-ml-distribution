@@ -4,9 +4,10 @@
 
 Run commands in the same terminal as the README, from the repository root.
 `$HOME` is your own home directory. No user-specific paths or machine inventory
-are required. The tested route is macOS ARM64 with a Linux ARM64 Docker engine.
-Other platforms need their matching binaries; a separate Linux-machine run is
-still pending.
+are required. The full local Producer/bootstrap/Consumer route was tested on
+macOS ARM64 with a Linux ARM64 Docker engine. Both images also built on a fresh
+Linux AMD64 CI runner, and the separate Layer 3 Consumer ran on Linux AMD64.
+The complete base Producer/bootstrap route has not been repeated on Linux AMD64.
 
 ## Python and uv
 
@@ -15,8 +16,10 @@ this combination was tested on macOS ARM64. The interpreter must already be
 installed: this uv version cannot automatically download that Python patch.
 Install uv from its [official release](https://github.com/astral-sh/uv/releases/tag/0.8.17).
 `pyproject.toml` pins direct dependencies; `uv.lock` pins the resolved environment.
-Linux selects the PyTorch CPU index. The container demo was tested on Linux ARM64
-with CPU-only PyTorch; other platforms have not been executed here.
+Linux selects the PyTorch CPU index. The host install requires macOS 14+ on Apple
+Silicon or Linux ARM64/AMD64 with glibc 2.28+, as required by the locked PyTorch
+wheels. Intel macOS and Alpine/musl are outside this setup. Matching packages
+alone do not establish that the full pipeline was tested on that platform.
 
 If your interpreter has a different path, pass that installed Python 3.12.14
 executable to `uv sync --frozen --python /path/to/python3.12`.

@@ -18,7 +18,7 @@ guest services. Layer 2 is optional; when enabled, signature verification runs
 before the key request. Bounded extraction takes place between decryption and
 local loading.
 
-The Consumer obtains AES through CDH, without an AES Secret mount or a Secret
+The Consumer obtains its AES key through CDH, without an AES Secret mount or a Secret
 fallback. Trustee runs on the same trusted lab host and uses development HTTP.
 Denying future requests cannot recall a key already released.
 
@@ -59,10 +59,12 @@ API server or KBS publicly, or treat this setup as production infrastructure.
 
 ## 1. Prepare the disposable Linux node
 
-Use an authorized disposable VM; [the optional GCE setup](layer3-cloud.md)
-records the tested provisioning route. The Kubernetes commands below do not create
-cloud resources. Use Ubuntu 22.04 x86_64 and working nested KVM. The full model
-demo uses the tested **4-vCPU, 16-GiB host** to accommodate its larger Kata guest
+The supplied automation targets an authorized disposable **Intel GCE VM running
+Ubuntu 22.04 x86_64**, with working nested KVM. Follow the [GCE setup](layer3-cloud.md)
+if you need to provision one; the Kubernetes commands below do not create cloud
+resources. Other KVM-capable hosts require adapting the GCE identity checks,
+Intel KVM setup and key-transfer steps. The full model demo uses the tested
+**4-vCPU, 16-GiB host** to accommodate its larger Kata guest
 and the cluster services. The [upstream minimum of 8 GB RAM and 2 vCPU](https://github.com/confidential-containers/operator/blob/cb92e0f48ebdb9b4869ae88b9f22a669dc63eb32/docs/INSTALL.md)
 describes the CoCo runtime prerequisites. Allow disk space for the approximately
 1 GB compressed Kata payload. A VM's CPU architecture alone does not establish
@@ -406,10 +408,16 @@ Acceptance criteria: allowed runs report `loaded`, `key_source: cdh` and finite
 CPU output; the signed run also reports `signature_verified: true`. The denied
 run must exit 1 at CDH retrieval without a loaded report. The verifier checks the
 Job/Pod identity, runtime, selected image/revision, absence of Secret mounts,
-termination code and those report fields without printing raw logs. Attribute a
-denial to policy only together with the controlled policy change and KBS evidence.
-Use fresh Job names for each
-run: Job templates are immutable. A policy change cannot revoke a key already
+termination code and those report fields without printing raw logs.
+
+**The denied verifier establishes CDH retrieval rejection, not its cause.** Before
+reporting a policy-denied run, also check KBS access records for this sequence:
+the authenticated policy update succeeds (HTTP 200), `/auth` and `/attest`
+succeed, then `/kbs/v0/resource/default/key/my-model` returns HTTP 401. Record
+only the timestamp, route and status outside Git. Without that evidence, report
+the result as a CDH retrieval failure; HTTP 500 alone is not proof of policy denial.
+
+Use fresh Job names for each run: Job templates are immutable. A policy change cannot revoke a key already
 copied by an earlier guest. Never add the AES Secret as a fallback.
 
 ## Observed results

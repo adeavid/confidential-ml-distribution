@@ -60,12 +60,13 @@ public; the model files and internal filenames are encrypted.
 | Kubernetes API credentials | Operator's separate kubeconfig | Bootstrap only |
 
 All key, token and public-key mounts are read-only; `/work` is writable.
-AES is already available when Consumer starts;
+The AES key is already available when Consumer starts;
 verifying first is a code-order guarantee, not an attestation-based key release.
 Bootstrap saves private keys under
 `$HOME/.config/confidential-ml-distribution/runs/<namespace>/` with mode `0600`.
 Signing PEM files are not password-encrypted; the parent directory and operator
-host must be trusted. Temporary signing/token Secrets are removed after Producer.
+host must be trusted. Bootstrap attempts to remove temporary signing/token Secrets
+after Producer; interrupted runs may need the README's cleanup steps.
 Deleting them cannot revoke credentials a process has already copied.
 
 The operator controls the verification public key independently of the Hub.

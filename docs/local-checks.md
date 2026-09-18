@@ -58,7 +58,7 @@ transaction: inspect leftovers and use fresh paths after an interruption.
 ## Signature commands
 
 These standalone commands exercise signing without a cluster. The [signed
-Kubernetes demo](../README.md#5-run-layer-2) provisions its own keys and calls the same signing code;
+Kubernetes demo](../README.md#5-optional-verify-producer-signatures-layer-2) provisions its own keys and calls the same signing code;
 these local commands are optional diagnostics, not setup prerequisites.
 
 After creating `artifacts/model.cml` above, run from the repository root:

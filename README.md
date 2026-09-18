@@ -1,31 +1,51 @@
 # Confidential ML Model Distribution PoC
 
-Distribute an encrypted model through Hugging Face and load it in Kubernetes.
-Layer 1 delivers AES through a Secret. Layer 2 verifies the Producer's signature
-before decryption. The original model is public; this demonstrates the delivery
-mechanism, not secrecy of the original weights.
+Publish an encrypted machine-learning model to Hugging Face Hub, then download,
+decrypt and load it in Kubernetes. A **Producer** Job packages a small BERT model
+and publishes the ciphertext. A separate **Consumer** Job retrieves that exact
+release, loads the decrypted local files and runs a small CPU check. Both jobs
+finish after reporting their result; this PoC does not serve an inference API.
 
-**Layers 1 and 2 verified on local kind / Linux ARM64.** The optional
-[Layer 3 lab](docs/layer3.md) also loaded the real model through Kata/CDH/Trustee
-on Linux AMD64, with and without signature verification, and rejected a fresh
-Consumer under deny-all. This is development attestation, not hardware-backed trust.
-Only Layer 1 is required by the assessment; the others are optional and independent.
+The source model is public. This demonstrates secure delivery of a packaged copy,
+not secrecy of the original weights.
 
-[Run the demo](#run-the-demo) · [Observed results](#observed-results) ·
+## Capabilities and scope
+
+The layer numbers identify the assessment's three capabilities. The instructions
+below are self-contained; the original assignment is not needed to run them.
+
+| Capability | What it implements | How to run and verify |
+|---|---|---|
+| **Encrypted model delivery (Layer 1, required)** | AES-256-GCM encryption, public Hub publication and a Consumer that reads its AES key from a Kubernetes Secret. | [Base demo](#4-run-encrypted-model-delivery-layer-1): model loads; wrong AES key fails. |
+| **Producer signature verification (Layer 2, optional)** | Ed25519 signature published with the ciphertext; Consumer verifies it using a controlled public key before decryption. | [Signed demo](#5-optional-verify-producer-signatures-layer-2): valid signature loads; wrong public key fails before decryption. |
+| **Attested key release (Layer 3, optional development lab)** | Consumer requests its AES key through Confidential Data Hub (CDH) and Trustee Key Broker Service (KBS), using sample attestation instead of an AES Secret mount. | [Separate Linux lab](docs/layer3.md): allowed requests load; a denied request stops without loading. |
+
+Start with Layer 1. Layer 2 uses the same local cluster; Layer 3 requires a separate
+compatible Linux environment and can run with or without Layer 2. Sample
+attestation demonstrates the integration, not hardware-backed protection from
+the host. Only Layer 1 is required by the assessment.
+
+**Verified:** Layers 1 and 2 ran end to end on local kind / Linux ARM64. The
+development Layer 3 lab loaded the same real model through Kata/CDH/Trustee on
+Linux AMD64 and rejected a fresh Consumer under deny-all. See
+[observed results and verification limits](#observed-results).
+
+[Run the demo](#run-the-demo) · [Tests](#tests-and-observed-results) ·
 [Design and security](docs/design.md) · [Optional local checks](docs/local-checks.md)
 
 ## Architecture
 
 ![Layers 1 and 2: public artifacts, Kubernetes Jobs, and controlled key mounts](docs/architecture-layer1-layer2.png)
 
-Bootstrap runs on the operator's machine: it generates keys, provisions Secrets
-and ConfigMaps, starts Producer, and passes the published commit to Consumer.
+The local bootstrap script, [`scripts/run_layer1.py`](scripts/run_layer1.py),
+orchestrates either mode: it generates keys, provisions Secrets and ConfigMaps,
+starts Producer, and passes the published commit to Consumer.
 Producer and Consumer are separate Jobs: each creates a Pod, runs Python and exits.
-Neither workload uses the Kubernetes API. Consumer receives AES and, in Layer 2,
+Neither workload uses the Kubernetes API. Consumer receives the AES key and, in Layer 2,
 a controlled public key. Only Producer receives the Hub token and, in Layer 2,
 the signing private key.
 
-Layer 2 verifies the exact bytes it later decrypts. Its AES file is already mounted
+Layer 2 verifies the exact bytes it later decrypts. Its AES key file is already mounted
 at Pod startup: verification controls program order, not key release. The loader
 then uses the extracted folder, an empty cache, and offline settings in a child
 process. Host and cluster administrators remain trusted.
@@ -54,6 +74,11 @@ fresh Linux AMD64 CI runner; the separate Layer 3 Consumer ran on an AMD64 VM.
 The entire Producer/bootstrap route has not been repeated on AMD64. Use the same
 terminal throughout so exported variables remain available.
 
+The host dependency installation also installs PyTorch: the locked wheels require
+**macOS 14+ on Apple Silicon**, or **Linux ARM64/AMD64 with glibc 2.28+**. Intel
+macOS and Alpine/musl are not supported by this host setup. Package compatibility
+does not mean the complete demo has been exercised on every supported platform.
+
 | Tool / access | Tested requirement |
 |---|---|
 | Python and uv | Python **3.12.14** installed as `python3.12`; uv **0.8.17** |
@@ -68,6 +93,9 @@ an explicit prerequisite: the pinned older uv cannot download this Python patch
 itself. No cloud subscription, container registry push or GPU is required.
 
 ## Run the demo
+
+For the required demo, complete steps 1–4, then go to step 6. Step 5 adds optional
+Producer signature verification.
 
 ### 1. Clone and install dependencies
 
@@ -124,7 +152,7 @@ Both Dockerfiles pin their Python/uv base images by digest. Build for the same
 platform as the kind node. Jobs use `imagePullPolicy: Never`, so images must be
 loaded into kind. Rebuild and reload after application changes.
 
-### 4. Authenticate and run Layer 1
+### 4. Run encrypted model delivery (Layer 1)
 
 This performs a **real publication** to your own public Hugging Face model repo.
 Replace `<your-user>` below with your personal account, not an organization.
@@ -151,7 +179,10 @@ tokens are supplied through stdin to kubectl, not embedded in versioned YAML,
 images, process arguments or logs. AES backups are stored outside the repo under
 `$HOME/.config/confidential-ml-distribution/runs/<namespace>/model.key` (`0600`).
 
-### 5. Run Layer 2
+### 5. Optional: verify Producer signatures (Layer 2)
+
+**Optional: add Producer signature verification.** For the required encrypted
+delivery demo only, skip to [inspection and cleanup](#6-inspect-and-clean-up).
 
 Use the same setup, account and variables. Layer 2 can also run directly after
 setup; a completed Layer 1 run is not a prerequisite. Separate tags make each
@@ -175,13 +206,19 @@ signature are published together and retrieved from the same full commit.
 Bootstrap creates a fresh Ed25519 pair and supplies the public key through a
 controlled ConfigMap, independently of the Hub. The private backup is
 `$HOME/.config/confidential-ml-distribution/runs/<namespace>/producer-signing.pem`.
-Temporary signing/token Secrets are removed after Producer; deleting a Secret
-does not revoke an already copied credential. Layer 2 never falls back to Layer 1.
+Consumer knows the AES key and could create another valid GCM ciphertext; it
+cannot create the Producer's signature without the separate signing private key.
+Bootstrap attempts to remove temporary signing/token Secrets after Producer,
+including caught failures. After an abrupt interruption or API outage, finish
+cleanup using the run's namespace below. Deleting a Secret does not revoke an
+already copied credential. Layer 2 never falls back to Layer 1.
 
 ### 6. Inspect and clean up
 
 Copy `namespace` from the bootstrap output. Each run has a different namespace.
 Local reports include revisions, Pod UIDs, image IDs, exit codes and CPU results.
+After a failure, `result.json` may be absent or partial; inspect the diagnostics
+in [troubleshooting](#troubleshooting) before cleanup.
 
 ```bash
 export MODEL_DEMO_RUN="<namespace-from-bootstrap>"
@@ -197,8 +234,12 @@ kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
   delete namespace "$MODEL_DEMO_RUN" --wait=true
 ```
 
-The public Hub revision, local report and protected key backup remain. Preserve
-matching keys if you need to consume that revision again. For full cluster cleanup:
+The public Hub revision, local report, protected key backup and local Hugging Face
+login remain. Preserve matching keys if you need to consume that revision again.
+When finished with the demo, `uv run --frozen hf auth logout --token-name <demo-token-name>`
+removes that saved login locally. Revoke a dedicated demo token in Hugging Face
+settings if it should no longer authorize publication; local logout does not
+revoke the token. For full cluster cleanup:
 
 ```bash
 KIND_EXPERIMENTAL_PROVIDER=docker kind delete cluster \
@@ -227,15 +268,22 @@ For a separate load-only check with container networking disabled, see
 
 ### Observed results
 
-On **2026-09-17**, the full suite with both real-model tests passed:
-**240 passed in 16.06 s**, including offline CDH and evidence-verifier checks. This is an
-observed duration, not a runtime guarantee. CDH fixtures do not prove attestation.
-A fresh local kind cluster also completed these real Hub/Kubernetes runs:
+On **2026-09-18**, the full suite with both real-model tests was rerun using the
+existing pinned local model: **240 passed in 17.31 s**, including offline CDH and
+evidence-verifier checks. This is an observed duration, not a runtime guarantee.
+CDH fixtures do not prove attestation. The following real Hub/Kubernetes runs
+were completed on **2026-09-17** in a fresh local kind cluster; the local test
+rerun did not repeat publication or cluster deployment:
 
 | Layer | Namespace | Published revision | Result |
 |---|---|---|---|
 | 1 | `model-demo-l1-4307c63d` | [`50fc2f58f73427e2da8f99e1adebd05738e5f0b3`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/50fc2f58f73427e2da8f99e1adebd05738e5f0b3) | Producer/Consumer exit 0; wrong AES exits 1. |
 | 2 | `model-demo-l2-4a883a84` | [`83612572c07e98c4167b37d2897e4bf1863ac976`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/83612572c07e98c4167b37d2897e4bf1863ac976) | Signature verified and model loaded; wrong AES/public key exit 1. |
+
+A separate copy containing only tracked files installed the frozen dependencies
+in a new virtual environment and passed the default suite: **238 passed, 2 opt-in
+model tests skipped**. This check reused the local package cache on the same host;
+no downloaded model, keys or runtime reports were copied into that checkout.
 
 The separate Linux AMD64 Layer 3 lab reused the Layer 2 artifact and matching AES
 key. Fresh Kata Jobs passed without a signature requirement and with signature
@@ -252,7 +300,7 @@ layer cache; the new-cluster runs reused those images with neutral tags.
 | Secret delivery and fresh Kubernetes Consumer load | Real runs above; read-only mounts and non-root UID/GID checked. |
 | Wrong AES, changed ciphertext/tag, truncation | Local fixtures and real artifact CLI checks; wrong AES also tested in Kubernetes. |
 | Bad/missing signature or wrong public key stops before AES | Offline call-order tests; wrong public key also tested in Kubernetes. |
-| Local files are sufficient; missing files cannot trigger fallback | Opt-in real-model tests with empty caches; separate Docker `--network none` load passed. |
+| Local files are sufficient; missing files cannot trigger fallback | Opt-in real-model loads with empty caches and Docker `--network none`; missing-file/no-fallback preflight fixtures. |
 | Unsafe archive names, links, types and sizes rejected | Local package fixtures; no unsafe extraction paths accepted. |
 | Container packaging and manifest validity | Both Dockerfiles built; base resource/workload templates passed API server dry-run; optional Kata Jobs executed on the lab cluster. |
 | Optional KBS key release | Real unsigned/signed model loads and a fresh policy-denied Consumer; no Secret fallback. |
@@ -279,9 +327,33 @@ test revisions, not additional integration runs.
 | Hub 401/403 or rejected repository | Check personal-account ownership, create/write permissions, and allowed repo files. |
 | Authentication or signature failure | Stop; inspect the expected artifact revision and matching keys. Never bypass checks. |
 | Existing output directory or namespace | Use a fresh run; never reuse private-key paths. |
-| Interrupted publication / commit conflict | Inspect the Hub and retain the key before retrying; publication may already have succeeded. |
+| Interrupted publication / commit conflict | Inspect the Hub and retain the key before retrying; publication may already have succeeded. Once cluster access returns, stop the run's Producer and delete that run's namespace to remove remaining Secrets. |
+| Pending Pod, deadline or missing `result.json` | Inspect the run's Jobs, Pods, events and saved logs below. Base Jobs have a 300-second deadline; bootstrap stops a Job if its 360-second wait expires. |
 | Wrong cluster / empty kubeconfig argument | Re-export the README variables in this terminal and use explicit `kind-model-demo`. |
 | Missing local model files | Treat as a failure; there is no original-model download fallback. |
+
+For a failed run, set `MODEL_DEMO_RUN` to the namespace printed in the initial
+`bootstrap` output, even if publication never completed:
+
+```bash
+kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
+  get jobs,pods -n "$MODEL_DEMO_RUN"
+kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
+  get events -n "$MODEL_DEMO_RUN" --sort-by=.metadata.creationTimestamp
+```
+
+Inspect any saved `runtime/$MODEL_DEMO_RUN/*.log` files locally. A timed-out Job
+may already have been deleted, so live Pod logs may no longer exist. Keep private
+keys and token values out of diagnostic output shared with others. After an
+interrupted run, stop any surviving Producer with:
+
+```bash
+kubectl --kubeconfig "$MODEL_DEMO_KUBECONFIG" --context kind-model-demo \
+  delete job producer -n "$MODEL_DEMO_RUN" --ignore-not-found --wait=true
+```
+
+Then use the namespace cleanup above. Inspect the Hub before starting a new run;
+do not assume a failed client operation means publication did not happen.
 
 ## Decisions and limitations
 
