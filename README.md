@@ -271,29 +271,39 @@ For a separate load-only check with container networking disabled, see
 On **2026-09-18**, the full suite with both real-model tests was rerun using the
 existing pinned local model: **240 passed in 17.31 s**, including offline CDH and
 evidence-verifier checks. This is an observed duration, not a runtime guarantee.
-CDH fixtures do not prove attestation. The following real Hub/Kubernetes runs
-were completed on **2026-09-17** in a fresh local kind cluster; the local test
-rerun did not repeat publication or cluster deployment:
+CDH fixtures do not prove attestation.
+
+The full Layer 1 and Layer 2 pipelines were repeated on **2026-09-18** from a
+fresh GitHub clone of commit
+[`f963697`](https://github.com/adeavid/confidential-ml-distribution/commit/f9636979296450c7fa1a443add65fae46b46affb),
+with a new Python environment and a new isolated kind cluster. Both images were
+built from that clone, reusing Docker's layer cache. Each run generated fresh
+keys, downloaded the source in Producer, published a new Hub revision, and loaded
+it in a new Consumer with its own memory-backed work volume:
 
 | Layer | Namespace | Published revision | Result |
 |---|---|---|---|
-| 1 | `model-demo-l1-4307c63d` | [`50fc2f58f73427e2da8f99e1adebd05738e5f0b3`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/50fc2f58f73427e2da8f99e1adebd05738e5f0b3) | Producer/Consumer exit 0; wrong AES exits 1. |
-| 2 | `model-demo-l2-4a883a84` | [`83612572c07e98c4167b37d2897e4bf1863ac976`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/83612572c07e98c4167b37d2897e4bf1863ac976) | Signature verified and model loaded; wrong AES/public key exit 1. |
+| 1 | `model-demo-l1-recheck-a9f4b8` | [`7d3ce0a25642c8dc3f5d5782d58bdf448ec15bd0`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/7d3ce0a25642c8dc3f5d5782d58bdf448ec15bd0) | Producer/Consumer exit 0; wrong AES exits 1. |
+| 2 | `model-demo-l2-recheck-a9f4b8` | [`377c97ed4d5520c610e443c0361f1bb9e21a8414`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/377c97ed4d5520c610e443c0361f1bb9e21a8414) | Signature verified and model loaded; wrong AES/public key exit 1. |
+
+Both successful Consumers produced finite `[1, 9, 30522]` output on CPU from
+4,433,468 parameters. All seven Pods were checked for non-root execution,
+read-only key mounts, memory-backed work volumes and disabled ServiceAccount
+token mounting. Temporary publisher/signing Secrets were removed. Anonymous
+Hub inspection found only the intended files at both revisions.
 
 A separate copy containing only tracked files installed the frozen dependencies
 in a new virtual environment and passed the default suite: **238 passed, 2 opt-in
 model tests skipped**. This check reused the local package cache on the same host;
 no downloaded model, keys or runtime reports were copied into that checkout.
 
-The separate Linux AMD64 Layer 3 lab reused the Layer 2 artifact and matching AES
-key. Fresh Kata Jobs passed without a signature requirement and with signature
+The separate Linux AMD64 Layer 3 lab was verified on **2026-09-17**, using the
+earlier signed artifact at
+[`83612572`](https://huggingface.co/adeavid/confidential-ml-artifacts/tree/83612572c07e98c4167b37d2897e4bf1863ac976)
+and its matching AES key. It was not rerun in this local Kubernetes check.
+Fresh Kata Jobs passed without a signature requirement and with signature
 verification (exit 0); another signed Job failed at CDH under deny-all (exit 1,
 no load). None mounted an AES Secret. See [commands and evidence](docs/layer3.md#observed-results).
-
-Both successful Consumers produced finite `[1, 9, 30522]` output on CPU from
-4,433,468 parameters. Anonymous Hub inspection found only the intended files.
-Application images had previously built from an isolated checkout using Docker's
-layer cache; the new-cluster runs reused those images with neutral tags.
 
 | Acceptance property | Evidence |
 |---|---|
@@ -306,8 +316,9 @@ layer cache; the new-cluster runs reused those images with neutral tags.
 | Optional KBS key release | Real unsigned/signed model loads and a fresh policy-denied Consumer; no Secret fallback. |
 
 Missing/modified signatures were tested offline, not by corrupting public Hub
-contents. Fixture tests are not integration evidence. The entire base demo has
-not been repeated by a second person from a clean clone. The portable Layer 3
+contents. Fixture tests are not integration evidence. The fresh-clone rerun used
+the same host; the base demo has not been independently reproduced by a second
+person on another machine. The portable Layer 3
 installer's parameterized form was reviewed, not rerun on a second fresh VM.
 
 The [CI workflow](.github/workflows/consumer-image.yml) tests local fixtures and
