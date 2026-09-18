@@ -8,6 +8,28 @@ the Hub artifact and loaded the real model, with and without Layer 2 verificatio
 A fresh signed Consumer was denied under deny-all and exited without loading.
 Layers 1 and 2 remain independently runnable through the main README.
 
+## Architecture and scope
+
+[![Layer 3: encrypted artifact download, optional signature verification and controlled key release](architecture-layer3.png)](architecture-layer3.png)
+
+**KBS** means Key Broker Service; **CDH** means Confidential Data Hub. The Kata
+guest is a virtual machine containing the application container and separate
+guest services. Layer 2 is optional; when enabled, signature verification runs
+before the key request. Bounded extraction takes place between decryption and
+local loading.
+
+The Consumer obtains AES through CDH, without an AES Secret mount or a Secret
+fallback. Trustee runs on the same trusted lab host and uses development HTTP.
+Denying future requests cannot recall a key already released.
+
+The [sample attester](https://github.com/confidential-containers/guest-components/blob/v0.10.0/attestation-agent/attester/src/sample/mod.rs)
+generates evidence in software. The
+[sample verifier](https://github.com/confidential-containers/trustee/blob/68607d4300dda5a8ae948e2562fd06d09cbd7eca/deps/verifier/src/sample/mod.rs)
+checks its format and expected report data, without validating a hardware
+signature. Our permissive resource policy accepts the resulting `tee: sample`
+claim. This exercises the protocol and key-release rules; it does not prove
+hardware isolation or that the Consumer runs an approved image.
+
 ## Tested version matrix
 
 | Component | Tested version |

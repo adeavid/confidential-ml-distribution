@@ -30,6 +30,22 @@ at Pod startup: verification controls program order, not key release. The loader
 then uses the extracted folder, an empty cache, and offline settings in a child
 process. Host and cluster administrators remain trusted.
 
+<details>
+<summary>Optional Layer 3: controlled key release in the development lab</summary>
+
+[![Layer 3: optional signature verification, guest CDH and Trustee key release](docs/architecture-layer3.png)](docs/architecture-layer3.png)
+
+The Consumer requests its AES key through the Confidential Data Hub (CDH) and
+Trustee Key Broker Service (KBS), with no AES Secret mount or Secret fallback.
+The diagram summarizes the flow; bounded extraction happens before local loading.
+Sample attestation is a software-generated development check, not hardware-backed
+proof of a trustworthy environment. The host remains trusted.
+
+See the [Layer 3 lab guide](docs/layer3.md) for the pinned stack, reproduction
+commands and observed allow/deny results.
+
+</details>
+
 ## Prerequisites
 
 The commands below assume a POSIX shell and a local Docker engine. The complete
